@@ -1,0 +1,70 @@
+# Java 后端工程师面试核心知识点
+
+## Java 基础
+
+### JVM 内存模型
+JVM 内存分为以下区域：
+- **堆（Heap）**：存放对象实例，是 GC 的主要区域，分为新生代和老年代
+- **方法区（Method Area）**：存放类信息、常量、静态变量（JDK8 后改为元空间 Metaspace）
+- **虚拟机栈（VM Stack）**：每个线程私有，存放栈帧（局部变量表、操作数栈等）
+- **本地方法栈**：为 Native 方法服务
+- **程序计数器**：当前线程执行的字节码行号指示器
+
+### 垃圾回收（GC）
+常见 GC 算法：
+- **标记-清除**：标记可回收对象后清除，会产生内存碎片
+- **复制算法**：将存活对象复制到另一块内存，适合新生代
+- **标记-整理**：标记后将存活对象整理到一端，适合老年代
+- **分代收集**：根据对象生命周期划分区域，分别采用不同算法
+
+常见 GC 收集器：Serial、Parallel、CMS、G1、ZGC
+
+### 多线程与并发
+- **synchronized**：内置锁，修饰方法或代码块；JDK6 后引入偏向锁→轻量级锁→重量级锁升级机制
+- **volatile**：保证可见性和禁止指令重排，不保证原子性
+- **ThreadLocal**：线程本地变量，每个线程有独立副本，注意内存泄漏问题
+- **线程池**：ThreadPoolExecutor 核心参数：corePoolSize、maximumPoolSize、keepAliveTime、workQueue
+- **AQS（AbstractQueuedSynchronizer）**：ReentrantLock、CountDownLatch、Semaphore 的底层实现
+
+## Spring Boot
+
+### 自动配置原理
+@SpringBootApplication 包含 @EnableAutoConfiguration，通过 SpringFactoriesLoader 加载 META-INF/spring.factories 中配置的自动配置类，根据 @ConditionalOnClass 等条件注解按需装配 Bean。
+
+### IoC 与 DI
+- **IoC（控制反转）**：将对象的创建和依赖关系交给 Spring 容器管理
+- **DI（依赖注入）**：容器在创建 Bean 时自动注入其依赖，方式有构造器注入、Setter 注入、字段注入
+
+### Spring Bean 生命周期
+实例化 → 属性填充 → BeanPostProcessor#postProcessBeforeInitialization → 初始化（@PostConstruct / InitializingBean） → BeanPostProcessor#postProcessAfterInitialization → 使用 → 销毁（@PreDestroy）
+
+### Spring 事务
+- **传播行为**：REQUIRED（默认）、REQUIRES_NEW、NESTED 等
+- **隔离级别**：对应数据库隔离级别，默认 DEFAULT（使用数据库默认）
+- **事务失效场景**：方法非 public、同类内部调用（绕过代理）、异常被 catch 未抛出
+
+## MySQL
+
+### 索引
+- **B+ Tree 索引**：InnoDB 默认，叶子节点存储完整数据（聚簇索引）或主键（二级索引）
+- **索引失效场景**：最左前缀匹配失败、对索引列做函数运算、隐式类型转换、使用 != 或 NOT IN、LIKE '%xxx'
+- **覆盖索引**：查询列全在索引中，无需回表
+
+### 事务与锁
+- **MVCC**：通过 undo log + Read View 实现非锁定读，解决读写冲突
+- **行锁**：Record Lock（记录锁）、Gap Lock（间隙锁）、Next-Key Lock（临键锁，防止幻读）
+- **死锁**：两个事务互相等待对方释放锁，InnoDB 会自动检测并回滚代价较小的事务
+
+## Redis
+
+### 数据结构
+String、Hash、List、Set、ZSet（有序集合）、Bitmap、HyperLogLog、Stream
+
+### 缓存问题
+- **缓存穿透**：查询不存在的数据，解决方案：布隆过滤器、缓存空值
+- **缓存击穿**：热点 key 过期，大量请求打到 DB，解决方案：互斥锁、逻辑过期
+- **缓存雪崩**：大量 key 同时过期，解决方案：过期时间加随机值、Redis 集群
+
+### 持久化
+- **RDB**：快照，定时持久化，恢复快，可能丢失最后一次快照后的数据
+- **AOF**：记录写命令，数据更完整，文件较大，使用 rewrite 压缩
