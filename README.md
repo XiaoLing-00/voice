@@ -25,7 +25,9 @@ git reset --soft HEAD~1
 
 git add .
 git commit -m "remove api key"
+
 二、如果 已经 push 到 GitHub
+
 方法 1（简单粗暴，适合最近一次提交）
 git reset --soft HEAD~1
 git push --force
