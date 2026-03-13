@@ -6,6 +6,7 @@
 - 题库随机抽题
 - 题库关键词搜索（分页）
 - 题库统计
+- 通过姓名查询学生 ID
 """
 import json
 import random
@@ -194,7 +195,6 @@ def create_quiz_search_tool(db):
         order_sql = _ORDER_MAP.get(order_by, "classify ASC, level ASC")
         offset = (page - 1) * page_size
 
-        # 构建 WHERE 条件
         conds, params = ["(content LIKE ? OR answer LIKE ?)"], [f"%{keyword}%", f"%{keyword}%"]
         if classify:
             conds.append("classify=?")
@@ -265,3 +265,59 @@ def create_quiz_stats_tool(db):
         return "\n".join(lines)
 
     return get_question_bank_stats
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ⑥ 通过姓名查询学生 ID
+# ═══════════════════════════════════════════════════════════════════
+
+class StudentLookupInput(BaseModel):
+    name: str = Field(
+        ...,
+        description="学生姓名，支持精确匹配或模糊匹配（包含该字符串的所有学生）",
+    )
+    fuzzy: bool = Field(
+        default=True,
+        description="是否启用模糊匹配（默认 True）。False 时只返回姓名完全相同的学生。",
+    )
+
+
+def create_student_lookup_tool(db):
+    @tool(args_schema=StudentLookupInput)
+    def get_student_id_by_name(name: str, fuzzy: bool = True) -> str:
+        """
+        通过学生姓名查询其 ID。
+        支持精确匹配（fuzzy=False）和模糊匹配（fuzzy=True，默认）。
+        当用户说"查看XXX的面试记录"时，先调用本工具获取 student_id，
+        再调用 get_student_interview_history。
+        """
+        if fuzzy:
+            rows = db.fetchall(
+                "SELECT id, name, created_at FROM student WHERE name LIKE ? ORDER BY id",
+                (f"%{name}%",),
+            )
+        else:
+            rows = db.fetchall(
+                "SELECT id, name, created_at FROM student WHERE name = ? ORDER BY id",
+                (name,),
+            )
+
+        if not rows:
+            hint = "模糊" if fuzzy else "精确"
+            return f"未找到姓名{hint}匹配「{name}」的学生，请确认姓名是否正确。"
+
+        if len(rows) == 1:
+            sid, sname, created_at = rows[0]
+            return (
+                f"找到学生：{sname}（ID={sid}，注册时间：{created_at[:10]}）。\n"
+                f"可使用 student_id={sid} 查询其面试记录。"
+            )
+
+        # 多个匹配结果
+        lines = [f"找到 {len(rows)} 位姓名含「{name}」的学生：\n"]
+        for sid, sname, created_at in rows:
+            lines.append(f"  ID={sid}  姓名：{sname}  注册：{created_at[:10]}")
+        lines.append("\n请用具体的 student_id 查询面试记录。")
+        return "\n".join(lines)
+
+    return get_student_id_by_name

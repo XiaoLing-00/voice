@@ -1,8 +1,15 @@
 # service/agent_core.py
 """
 Agent 核心框架（原生 OpenAI SDK 真实流式输出）
-使用 openai.OpenAI 客户端 + stream=True，第一个 token 即时响应。
+
+重构要点：
+  - 构造函数接受 skill_set: SkillSet 参数，自动从 registry 加载对应工具
+  - 提供 setter 方法（set_system_prompt / set_skill_set / set_model）方便运行时调整
+  - 保留原有 chat() / stream() / clear_conversation() 接口，完全向后兼容
+  - register_tool / register_tools 仍可手动追加工具（优先级高于 skill_set 自动加载）
 """
+from __future__ import annotations
+
 import json
 import os
 from typing import Any, Dict, Generator, List, Optional
@@ -57,12 +64,20 @@ class ConversationHistory:
     def clear(self):
         self.messages.clear()
 
+    def update_system_prompt(self, prompt: str):
+        """更新 system prompt，不影响已有对话历史。"""
+        self.system_prompt = prompt
+
 
 # ── LangChain 工具 → OpenAI tools 格式转换 ───────────────────────────────────
 
 def _lc_tool_to_openai(tool_obj) -> dict:
-    """把 LangChain @tool 对象转换为 OpenAI tools 格式"""
-    schema = tool_obj.args_schema.schema() if tool_obj.args_schema else {"properties": {}, "type": "object"}
+    """把 LangChain @tool 对象转换为 OpenAI tools 格式。"""
+    schema = (
+        tool_obj.args_schema.schema()
+        if tool_obj.args_schema
+        else {"properties": {}, "type": "object"}
+    )
     return {
         "type": "function",
         "function": {
@@ -81,22 +96,41 @@ def _lc_tool_to_openai(tool_obj) -> dict:
 
 class Agent:
     """
-    Agent 核心，使用原生 OpenAI SDK 实现真实流式输出。
-    工具调用（tool_use）阶段整体收取后执行，纯文本阶段逐 token yield。
+    通用 Agent，支持：
+      - SkillSet 注入：构造时传入 skill_set，自动从 registry 加载对应工具
+      - system_prompt 注入：构造或运行时均可设置
+      - setter 方法：set_system_prompt / set_skill_set / set_model
+      - 手动工具注册：register_tool / register_tools（可与 skill_set 叠加使用）
+      - 真实流式输出：stream() 生成器，chat() 同步兼容
+
+    示例——通过 skill_set 构造：
+        from service.tools import ASSISTANT_SKILLS
+        agent = Agent(db=db, knowledge_store=ks, skill_set=ASSISTANT_SKILLS,
+                      system_prompt="你是AI助手...")
+
+    示例——手动注册工具（旧用法，完全兼容）：
+        agent = Agent(db=db, system_prompt="...")
+        agent.register_tools(get_tools(db, ks))
     """
 
     def __init__(
-            self,
-            db,
-            system_prompt: Optional[str] = None,
-            # 🔑 关键修改1：默认模型改为 Omni 系列（按需选择）
-            model: str = "qwen3-omni-flash",  # 或 "qwen3-omni-plus"
-            temperature: float = 0.1,
-            max_tokens: int = 2048,
+        self,
+        db=None,
+        knowledge_store=None,
+        skill_set=None,                         # SkillSet | None
+        system_prompt: Optional[str] = None,
+        model: str = "qwen3-omni-flash",
+        temperature: float = 0.1,
+        max_tokens: int = 2048,
+        max_turns: int = 30,
     ):
         self.db = db
+        self.knowledge_store = knowledge_store
         self.system_prompt = system_prompt or ""
-        self.conversation = ConversationHistory(system_prompt=self.system_prompt)
+        self.conversation = ConversationHistory(
+            system_prompt=self.system_prompt,
+            max_turns=max_turns,
+        )
         self._tools_lc: Dict[str, Any] = {}
         self._tools_openai: List[dict] = []
 
@@ -108,34 +142,102 @@ class Agent:
         self._temperature = temperature
         self._max_tokens = max_tokens
 
-    # ── 工具注册 ──────────────────────────────────────────────────────────────
+        # 如果传入了 skill_set，自动加载对应工具
+        if skill_set is not None:
+            self._load_skill_set(skill_set)
 
-    def register_tool(self, tool_obj):
+    # ── SkillSet 自动加载 ──────────────────────────────────────────────────────
+
+    def _load_skill_set(self, skill_set) -> None:
+        """
+        根据 SkillSet 从 registry 加载工具并注册。
+        延迟导入避免循环依赖。
+        """
+        try:
+            from service.tools.registry import get_tools_for
+            tools = get_tools_for(
+                db=self.db,
+                knowledge_store=self.knowledge_store,
+                skill_set=skill_set,
+            )
+            self.register_tools(tools)
+            print(f"[Agent] ✅ SkillSet「{skill_set.name}」加载 {len(tools)} 个工具")
+        except Exception as e:
+            print(f"[Agent] ⚠️  SkillSet 加载失败：{e}")
+
+    # ── Setter 方法 ────────────────────────────────────────────────────────────
+
+    def set_system_prompt(self, prompt: str) -> "Agent":
+        """
+        运行时更新 system prompt。
+        不清空对话历史，新 prompt 在下次请求时生效。
+        返回 self 支持链式调用。
+        """
+        self.system_prompt = prompt
+        self.conversation.update_system_prompt(prompt)
+        return self
+
+    def set_skill_set(self, skill_set, clear_existing: bool = True) -> "Agent":
+        """
+        切换工具集合。
+        clear_existing=True 时先清空已注册工具，再加载新集合。
+        返回 self 支持链式调用。
+        """
+        if clear_existing:
+            self._tools_lc.clear()
+            self._tools_openai.clear()
+        self._load_skill_set(skill_set)
+        return self
+
+    def set_model(self, model: str, temperature: float | None = None) -> "Agent":
+        """切换底层模型，可选更新温度参数。返回 self 支持链式调用。"""
+        self._model = model
+        if temperature is not None:
+            self._temperature = temperature
+        return self
+
+    def set_temperature(self, temperature: float) -> "Agent":
+        self._temperature = temperature
+        return self
+
+    def set_max_tokens(self, max_tokens: int) -> "Agent":
+        self._max_tokens = max_tokens
+        return self
+
+    # ── 工具注册（手动，向后兼容） ─────────────────────────────────────────────
+
+    def register_tool(self, tool_obj) -> "Agent":
         self._tools_lc[tool_obj.name] = tool_obj
         self._tools_openai = [_lc_tool_to_openai(t) for t in self._tools_lc.values()]
+        return self
 
-    def register_tools(self, tools: list):
+    def register_tools(self, tools: list) -> "Agent":
         for t in tools:
             self.register_tool(t)
+        return self
+
+    def unregister_tool(self, tool_name: str) -> "Agent":
+        """移除指定工具。"""
+        self._tools_lc.pop(tool_name, None)
+        self._tools_openai = [_lc_tool_to_openai(t) for t in self._tools_lc.values()]
+        return self
 
     # ── 公共接口 ──────────────────────────────────────────────────────────────
 
     def chat(self, user_input: str) -> str:
-        """同步完整输出（兼容旧调用）"""
+        """同步完整输出（兼容旧调用）。"""
         return "".join(self.stream(user_input))
 
     def stream(self, user_input: str) -> Generator[str, None, None]:
         """
-        真实流式生成器（兼容 Qwen3-Omni 文本模式）
-        ⚠️ Omni 的 tool_call 参数名可能略有差异，如遇报错请开启 debug 日志
-        文本输入测试之后完全兼容
+        真实流式生成器。
+        工具调用阶段整体收取后执行，纯文本阶段逐 token yield。
         """
         self.conversation.add_user(user_input)
 
         for _round in range(12):
             messages = self.conversation.get()
 
-            # ── 发起流式请求 ──────────────────────────────────────────────────
             stream_kwargs: dict = dict(
                 model=self._model,
                 messages=messages,
@@ -151,9 +253,8 @@ class Agent:
             try:
                 response_stream = self._client.chat.completions.create(**stream_kwargs)
             except Exception as e:
-                # 🔑 关键修改3：添加兼容性错误提示
                 yield f"\n\n[⚠️ 调用失败: {e}]\n"
-                yield "[💡 请确认：1. 模型名正确 2. 账户有 Omni 权限 3. base_url 无误]\n"
+                yield "[💡 请确认：1. 模型名正确 2. 账户有相应权限 3. base_url 无误]\n"
                 return
 
             # ── 流式收取 ─────────────────────────────────────────────────────
@@ -168,13 +269,11 @@ class Agent:
                 delta = choice.delta
                 finish_reason = choice.finish_reason or finish_reason
 
-                # 文本内容
                 if delta.content:
                     content_parts.append(delta.content)
                     if not tool_calls_map:
                         yield delta.content
 
-                # 工具调用 delta（Omni 的 tool_call 格式与 OpenAI 基本兼容）
                 if delta.tool_calls:
                     for tc in delta.tool_calls:
                         idx = tc.index
@@ -193,31 +292,23 @@ class Agent:
 
             # ── 判断结果 ──────────────────────────────────────────────────────
             if tool_calls_map:
-                # 构建 OpenAI tool_calls 列表
                 openai_tool_calls = []
                 for idx in sorted(tool_calls_map.keys()):
                     tc = tool_calls_map[idx]
                     openai_tool_calls.append({
                         "id": tc["id"],
                         "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["args"],
-                        },
+                        "function": {"name": tc["name"], "arguments": tc["args"]},
                     })
 
                 self.conversation.add_assistant(full_content, tool_calls=openai_tool_calls)
 
-                # 执行每个工具
                 for tc_info in openai_tool_calls:
                     tool_name = tc_info["function"]["name"]
                     yield f"\n\n⚙️ **正在调用** `{tool_name}`...\n\n"
                     result = self._execute_tool(tool_name, tc_info["function"]["arguments"])
                     self.conversation.add_tool_result(tc_info["id"], result)
-                # 继续下一轮
-
             else:
-                # 纯文本回答
                 self.conversation.add_assistant(full_content)
                 return
 
@@ -236,8 +327,20 @@ class Agent:
         except Exception as e:
             return f"❌ 工具执行失败 ({tool_name}): {e}"
 
-    def clear_conversation(self):
+    # ── 工具函数 ──────────────────────────────────────────────────────────────
+
+    def clear_conversation(self) -> "Agent":
         self.conversation.clear()
+        return self
 
     def get_registered_tools(self) -> List[str]:
         return list(self._tools_lc.keys())
+
+    def get_tool_count(self) -> int:
+        return len(self._tools_lc)
+
+    def __repr__(self) -> str:
+        return (
+            f"Agent(model={self._model!r}, tools={self.get_registered_tools()}, "
+            f"system_prompt_len={len(self.system_prompt)})"
+        )
