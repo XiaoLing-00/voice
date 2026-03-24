@@ -50,9 +50,16 @@ class VoiceWorker(QObject):
             result = client.analyze(audio_path)
             self.finished.emit(result)
         except Exception as e:
+            # 捕获业务异常，避免子线程崩溃导致主线程出现 Destroyed 问题
             self.error.emit(str(e))
+        except BaseException as e:
+            # 捕获所有异常（包括 SystemExit、KeyboardInterrupt 等）以保护主线程
+            self.error.emit(f"音频线程致命错误：{e}")
         finally:
-            self.recorder.clean_temp()
+            try:
+                self.recorder.clean_temp()
+            except Exception:
+                pass
 
 class InterviewWorker(QObject):
     """
@@ -628,23 +635,33 @@ class InterviewPanel(QWidget):
         self.voice_cancel_btn.setVisible(True)
         self.voice_cancel_btn.setEnabled(True)
 
-        self._voice_thread = QThread()
+        # 确保线程引用在实例上持有，便于生命周期管理
+        self._voice_thread = QThread(self)
         self._voice_worker = VoiceWorker()
         self._voice_worker.moveToThread(self._voice_thread)
 
+        # 启动及信号连接
         self._voice_thread.started.connect(self._voice_worker.run)
+
         self._voice_worker.finished.connect(self._on_voice_result)
         self._voice_worker.error.connect(self._on_voice_error)
 
-        self._voice_worker.stop_requested.connect(self._voice_worker.stop)
-        self._voice_worker.cancel_requested.connect(self._voice_worker.cancel)
+        self._voice_worker.finished.connect(self._reset_voice_btn)
+        self._voice_worker.error.connect(self._reset_voice_btn)
 
         self._voice_worker.finished.connect(self._voice_thread.quit)
         self._voice_worker.error.connect(self._voice_thread.quit)
 
+        # 关联销毁 / 清理
         self._voice_thread.finished.connect(self._voice_worker.deleteLater)
         self._voice_thread.finished.connect(self._voice_thread.deleteLater)
+        self._voice_worker.destroyed.connect(self._cleanup_voice_thread)
+        self._voice_thread.destroyed.connect(self._cleanup_voice_thread)
         self._voice_thread.finished.connect(self._cleanup_voice_thread)
+
+        # 限制多次启动
+        self._voice_thread.setObjectName("VoiceThread")
+        self._voice_worker.setObjectName("VoiceWorker")
 
         self._voice_thread.start()
 
@@ -680,8 +697,6 @@ class InterviewPanel(QWidget):
         self.voice_btn.setText("🎤 语音")
         self.voice_btn.setEnabled(True)
         self.voice_cancel_btn.setVisible(False)
-        self._voice_thread = None
-        self._voice_worker = None
 
     def _finish_interview(self):
         self._set_loading(True, "正在生成最终报告...")
