@@ -1,0 +1,19 @@
+# Python 虚拟环境（核心：忽略整个.venv目录）
+.venv/
+# 数据库文件
+interview.db
+interview.db-shm
+interview.db-wal
+# 环境变量
+.env
+# Python 缓存文件
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+# 其他可能的大文件/无用文件
+*.dll
+*.so
+*.exe
+*.zip
+*.rar
