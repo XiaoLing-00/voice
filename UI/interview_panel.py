@@ -145,7 +145,7 @@ class InterviewWorker(QObject):
         self.engine = engine
         self.db = db
         self.session_id: int | None = None
-        self._is_finished = False          # 本次 submit_answer 是否是最后一轮
+        self._is_finished = False
 
     # ── 请求处理 ──────────────────────────────────────────────────────────────
 
@@ -164,14 +164,10 @@ class InterviewWorker(QObject):
             self.session_id = self.engine.start_session(student_id, job_id)
             self.session_started.emit(self.session_id)
 
-            # ── 流式获取第一问 ──────────────────────────────────────────────
-            parts: list[str] = []
+            # get_first_question_stream 内部已完成历史同步和落库
             for token in self.engine.get_first_question_stream(self.session_id):
-                parts.append(token)
                 self.stream_chunk.emit(token)
 
-            full_text = "".join(parts)
-            self.engine.confirm_first_question(self.session_id, full_text)
             self.stream_done.emit(self.PHASE_FIRST_Q)
 
         except Exception as e:
@@ -182,12 +178,9 @@ class InterviewWorker(QObject):
             self.error_occurred.emit("Session not initialized")
             return
         try:
-            ai_parts: list[str] = []
-            eval_data: dict | None = None
             self._is_finished = False
 
             for token in self.engine.submit_answer_stream(self.session_id, answer):
-                # ── 协议解析 ────────────────────────────────────────────────
                 if token.startswith("__EVAL__:"):
                     eval_data = json.loads(token[len("__EVAL__:"):].strip())
                     self.eval_received.emit(eval_data)
@@ -206,11 +199,9 @@ class InterviewWorker(QObject):
                     return
 
                 else:
-                    ai_parts.append(token)
                     self.stream_chunk.emit(token)
 
-            ai_reply = "".join(ai_parts)
-            self.engine.confirm_answer(self.session_id, ai_reply, self._is_finished)
+            # submit_answer_stream 内部已完成历史同步和落库
             self.stream_done.emit(self.PHASE_ANSWER)
 
         except Exception as e:
@@ -245,20 +236,11 @@ class InterviewWorker(QObject):
 # ══════════════════════════════════════════════════════════════════════════════
 
 class NewMessageToast(QPushButton):
-    """
-    悬浮在聊天区右下角的「↓ 新消息」提示。
-    仅当用户滚离底部 且 有新内容时显示。
-    """
-
     def __init__(self, parent: QWidget):
         super().__init__("↓  新消息", parent)
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedSize(110, 34)
-        self._apply_style(False)
-        self.hide()
-
-    def _apply_style(self, pulsing: bool):
-        base = f"""
+        self.setStyleSheet(f"""
             QPushButton {{
                 background: {T.NEON};
                 color: #0a0a0f;
@@ -273,11 +255,10 @@ class NewMessageToast(QPushButton):
                 background: {T.PURPLE};
                 color: #ffffff;
             }}
-        """
-        self.setStyleSheet(base)
+        """)
+        self.hide()
 
     def update_position(self, parent_rect):
-        """紧贴父 QScrollArea 右下角"""
         x = parent_rect.width() - self.width() - 18
         y = parent_rect.height() - self.height() - 14
         self.move(x, y)
@@ -295,12 +276,11 @@ class InterviewPanel(QWidget):
         self.engine = engine
         self._session_id: int | None = None
 
-        # ── 流式状态 ──────────────────────────────────────────────────────────
         self._is_streaming = False
         self._current_ai_bubble: ChatBubble | None = None
         self._typing_indicator: TypingIndicator | None = None
-        self._stream_phase: str = ""          # first_q / answer / report
-        self._pending_is_finished = False     # 本轮是否是最后一轮
+        self._stream_phase: str = ""
+        self._pending_is_finished = False
 
         # ── 语音录制状态 ───────────────────────────────────────────────────────
         self._is_voice_recording = False
@@ -320,7 +300,6 @@ class InterviewPanel(QWidget):
         self._user_scrolled_up = False        # 用户是否手动滚离了底部
         self._has_new_content = False         # 是否有未读新内容
 
-        # ── 后台线程 ──────────────────────────────────────────────────────────
         self._worker = InterviewWorker(engine, db)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
@@ -347,11 +326,9 @@ class InterviewPanel(QWidget):
 
     def _build_ui(self):
         self.setStyleSheet(GLOBAL_QSS + input_qss() + combo_qss())
-
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         root.addWidget(self._build_header())
         root.addWidget(self._build_chat_area(), stretch=1)
         root.addWidget(self._build_footer())
@@ -427,14 +404,11 @@ class InterviewPanel(QWidget):
         self._chat_layout.insertWidget(0, welcome)
 
         self._scroll.setWidget(self._chat_container)
-
-        # ── 监听滚动条变化 ────────────────────────────────────────────────────
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
 
-        # ── 「新消息」浮动 Toast ───────────────────────────────────────────────
         self._toast = NewMessageToast(self._scroll)
         self._toast.clicked.connect(self._jump_to_bottom)
-        self._scroll.resizeEvent = self._on_scroll_resize   # type: ignore[method-assign]
+        self._scroll.resizeEvent = self._on_scroll_resize  # type: ignore[method-assign]
 
         return self._scroll
 
@@ -525,18 +499,14 @@ class InterviewPanel(QWidget):
         return footer
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 流式 chunk 处理（与 agent_panel._on_chunk 同构）
+    # 流式 chunk 处理
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_chunk(self, chunk: str):
-        """接收普通文本 token，追加到当前 AI 气泡"""
-        # 移除打字指示器（首个 token 时）
         if self._typing_indicator is not None:
             self._remove_typing_indicator()
 
-        # 首个 token → 创建新气泡
         if self._current_ai_bubble is None:
-            role = "ai" if self._stream_phase != InterviewWorker.PHASE_REPORT else "ai"
             self._current_ai_bubble = ChatBubble("ai")
             self._chat_layout.insertWidget(
                 self._chat_layout.count() - 1, self._current_ai_bubble
@@ -546,7 +516,7 @@ class InterviewPanel(QWidget):
         self._notify_new_content()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 各类信号槽
+    # 信号槽
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_session_started(self, session_id: int):
@@ -557,27 +527,14 @@ class InterviewPanel(QWidget):
         self._set_loading(True, "AI 面试官正在出题...")
 
     def _on_eval_received(self, data: dict):
-        """
-        收到评分数据 → 保证插入顺序：用户回答 → 评分卡 → typing indicator → AI气泡
-
-        流程：
-          1. 暂时摘下 typing indicator（从布局移除但不销毁）
-          2. 插入评分卡气泡
-          3. 把 typing indicator 重新挂回布局末尾占位
-        这样后续 _on_chunk 首 token 到来时，撤掉 typing indicator、创建
-        AI 气泡，最终顺序就是：评分卡 → AI流式气泡 ✓
-        """
-
         class _FakeEval:
             def __init__(self, d):
-                # ScoreCardBubble 期望的字段名（*_score + suggestion）
                 self.overall_score  = d.get("overall_score",  d.get("overall",  0))
                 self.tech_score     = d.get("tech_score",     d.get("tech",     0))
                 self.logic_score    = d.get("logic_score",    d.get("logic",    0))
                 self.depth_score    = d.get("depth_score",    d.get("depth",    0))
                 self.clarity_score  = d.get("clarity_score",  d.get("clarity",  0))
                 self.suggestion     = d.get("suggestion",     d.get("comment",  ""))
-                # 裸名别名（兼容其他可能的访问方式）
                 self.overall = self.overall_score
                 self.tech    = self.tech_score
                 self.logic   = self.logic_score
@@ -586,15 +543,11 @@ class InterviewPanel(QWidget):
                 self.comment = self.suggestion
             def to_dict(self): return data
 
-        # ── 1. 暂时摘下 typing indicator ──────────────────────────────────────
         if self._typing_indicator is not None:
             self._chat_layout.removeWidget(self._typing_indicator)
-            # 不 deleteLater，后面还要重新插回去
 
-        # ── 2. 插入评分卡 ──────────────────────────────────────────────────────
         self._add_score_bubble(_FakeEval(data))
 
-        # ── 3. 把 typing indicator 重新挂到末尾占位 ───────────────────────────
         if self._typing_indicator is not None:
             self._chat_layout.insertWidget(
                 self._chat_layout.count() - 1, self._typing_indicator
@@ -605,7 +558,6 @@ class InterviewPanel(QWidget):
         self._pending_is_finished = True
 
     def _on_all_finished(self):
-        """submit_answer 返回 __FINISHED__：面试已无更多题目"""
         self._add_system_msg("面试已结束，请点击「结束面试」查看报告。")
         self.status_lbl.setText("题目已完成，请点击「结束面试」生成报告")
         self._set_input_enabled(False)
@@ -614,8 +566,6 @@ class InterviewPanel(QWidget):
         self._add_system_msg(f"━━  综合得分：{score}/10  ━━")
 
     def _on_stream_done(self, phase: str):
-        """流结束：根据阶段决定后续 UI 状态"""
-        # 清理流式气泡引用
         self._current_ai_bubble = None
         self._is_streaming = False
 
@@ -681,11 +631,9 @@ class InterviewPanel(QWidget):
         self.name_input.setEnabled(False)
         self.job_combo.setEnabled(False)
         self._clear_chat()
-        # 重置滚动状态
         self._user_scrolled_up = False
         self._has_new_content = False
         self._toast.hide()
-
         self._worker.request_start.emit(name, job_id)
 
     def _send_answer(self):
@@ -1022,15 +970,13 @@ class InterviewPanel(QWidget):
         self._worker.request_finish.emit()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 滚动 & 「新消息」Toast 逻辑
+    # 滚动 & Toast
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_scroll_changed(self, value: int):
-        """滚动条值变化时，判断用户是否在底部"""
         sb = self._scroll.verticalScrollBar()
         at_bottom = value >= sb.maximum() - 10
         if at_bottom:
-            # 回到底部 → 清除提示
             self._user_scrolled_up = False
             self._has_new_content = False
             self._toast.hide()
@@ -1038,11 +984,6 @@ class InterviewPanel(QWidget):
             self._user_scrolled_up = True
 
     def _notify_new_content(self):
-        """
-        有新内容到来时：
-          - 如果用户在底部 → 自动滚到底部
-          - 如果用户滚离底部 → 显示 Toast 提示
-        """
         if self._user_scrolled_up:
             self._has_new_content = True
             self._toast.update_position(self._scroll.rect())
@@ -1052,7 +993,6 @@ class InterviewPanel(QWidget):
             self._scroll_to_bottom()
 
     def _jump_to_bottom(self):
-        """点击 Toast → 立即滚到底部并隐藏 Toast"""
         sb = self._scroll.verticalScrollBar()
         sb.setValue(sb.maximum())
         self._user_scrolled_up = False
@@ -1065,7 +1005,6 @@ class InterviewPanel(QWidget):
         ))
 
     def _on_scroll_resize(self, event):
-        """QScrollArea resize 时更新 Toast 位置"""
         QScrollArea.resizeEvent(self._scroll, event)
         if self._toast.isVisible():
             self._toast.update_position(self._scroll.rect())

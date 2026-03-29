@@ -4,31 +4,37 @@
 
 职责：
   1. 构建所有可用工具实例（懒加载，失败时跳过并打印警告）
-  2. 根据 SkillSet 权限集合筛选并返回对应工具列表
-  3. 提供兼容旧接口的 get_tools() 快捷函数
+  2. 根据 SkillSet 筛选并返回工具列表
+  3. 提供兼容旧接口的便捷函数
 
-用法示例：
-    from service.tools import get_tools_for, ASSISTANT_SKILLS, INTERVIEW_SKILLS
+知识库工具的两种使用方式（均支持）：
+  方式 A — 由 registry 自动从 env 读取 kb_id 并构造 KnowledgeCore（推荐）：
+      tools = get_interview_tools(db)                 # DS_COURSE_KB_ID 自动从 env 读
+      tools = get_assistant_tools(db)                 # TECH_KB_ID      自动从 env 读
 
-    # AI 助手（全量）
-    agent.register_tools(get_tools_for(db, ks, ASSISTANT_SKILLS))
-
-    # 面试引擎（轻量）
-    engine_tools = get_tools_for(db, ks, INTERVIEW_SKILLS)
+  方式 B — 外部手动传入 KnowledgeCore 实例（main.py 显式控制时使用）：
+      tech_kb   = KnowledgeCore(knowledge_base_id=os.getenv("TECH_KB_ID"), label="技术")
+      course_kb = KnowledgeCore(knowledge_base_id=os.getenv("DS_COURSE_KB_ID"), label="课程")
+      tools     = get_tools_for(db=db, tech_kb=tech_kb, ds_course_kb=course_kb, skill_set=...)
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from .db_tools import (
     create_history_tool,
+    create_student_lookup_tool,
     create_job_info_tool,
     create_quiz_draw_tool,
     create_quiz_search_tool,
     create_quiz_stats_tool,
     create_voice_transcribe_tool,
 )
-from .knowledge_tools import create_rag_tool
+from .knowledge import (
+    KnowledgeCore,
+    create_knowledge_search_tool,
+    create_ds_course_tool,
+)
 from .search_tools import create_web_search_tool, create_wiki_tool
 from .permissions import (
     SkillSet,
@@ -57,18 +63,67 @@ _TOOL_FACTORIES = [
 
 
 def _build_all_tools(db=None, knowledge_store=None) -> dict[str, Any]:
+def build_tools(
+    db=None,
+    tech_kb: Optional[KnowledgeCore] = None,
+    ds_course_kb: Optional[KnowledgeCore] = None,
+) -> dict[str, Any]:
     """
-    尝试构建所有工具，失败时打印警告并跳过。
-    返回 {tool_name: tool_obj} 字典。
+    构建所有可用工具，返回 {tool_name: tool_obj} 字典。
+
+    知识库工具说明：
+      - tech_kb      → search_knowledge_base（HelperEngine 使用）
+                        未传入时自动从 env TECH_KB_ID 构造
+      - ds_course_kb → search_ds_course（InterviewEngine 使用）
+                        未传入时自动从 env DS_COURSE_KB_ID 构造
     """
-    kwargs = {"db": db, "knowledge_store": knowledge_store}
     result: dict[str, Any] = {}
 
-    for tool_name, factory, kwarg_keys in _TOOL_FACTORIES:
+    # ── DB 类工具 ─────────────────────────────────────────────────────────────
+    _db_factories = [
+        ("get_job_position_info",         create_job_info_tool),
+        ("draw_questions_from_bank",      create_quiz_draw_tool),
+        ("get_question_bank_stats",       create_quiz_stats_tool),
+        ("search_question_bank",          create_quiz_search_tool),
+        ("get_student_interview_history", create_history_tool),
+        ("get_student_id_by_name",        create_student_lookup_tool),
+    ]
+    for tool_name, factory in _db_factories:
+        if db is None:
+            print(f"[Registry] ⚠️  {tool_name} 跳过：db 未传入")
+            continue
         try:
-            call_kwargs = {k: kwargs[k] for k in kwarg_keys}
-            tool_obj = factory(**call_kwargs)
-            result[tool_name] = tool_obj
+            result[tool_name] = factory(db)
+            print(f"[Registry] ✅ {tool_name}")
+        except Exception as e:
+            print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
+
+    # ── 知识库类工具 ──────────────────────────────────────────────────────────
+    # 工厂函数签名：factory(kb: KnowledgeCore = None)
+    # kb=None 时工厂内部自动从 env 读取 kb_id 并构造 KnowledgeCore
+    _kb_factories = [
+        ("search_knowledge_base", create_knowledge_search_tool, tech_kb),
+        ("search_ds_course",      create_ds_course_tool,        ds_course_kb),
+    ]
+    for tool_name, factory, kb_instance in _kb_factories:
+        try:
+            # kb_instance 为 None 时，工厂自动从 env 构造（若 env 也未配置则抛 ValueError 被捕获）
+            result[tool_name] = factory(kb_instance)
+            label = kb_instance.label if kb_instance else "auto-env"
+            print(f"[Registry] ✅ {tool_name} (kb={label!r})")
+        except ValueError as e:
+            print(f"[Registry] ⚠️  {tool_name} 跳过：{e}")
+        except Exception as e:
+            print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
+
+    # ── 联网搜索类工具 ────────────────────────────────────────────────────────
+    _search_factories = [
+        ("web_search",       create_web_search_tool),
+        ("search_wikipedia", create_wiki_tool),
+    ]
+    for tool_name, factory in _search_factories:
+        try:
+            result[tool_name] = factory()
             print(f"[Registry] ✅ {tool_name}")
         except Exception as e:
             print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
@@ -77,50 +132,35 @@ def _build_all_tools(db=None, knowledge_store=None) -> dict[str, Any]:
 
 
 def get_tools_for(
-    db,
-    knowledge_store=None,
+    db=None,
+    tech_kb: Optional[KnowledgeCore] = None,
+    ds_course_kb: Optional[KnowledgeCore] = None,
     skill_set: SkillSet = ASSISTANT_SKILLS,
 ) -> list:
-    """
-    根据 SkillSet 权限集合返回对应的工具列表。
-
-    Args:
-        db:              DatabaseManager 实例
-        knowledge_store: KnowledgeStore 实例（可选，READONLY/ASSISTANT/ADMIN 需要）
-        skill_set:       权限集合，默认 ASSISTANT_SKILLS
-
-    Returns:
-        符合权限的工具对象列表
-    """
-    all_tools = _build_all_tools(db=db, knowledge_store=knowledge_store)
-    selected = [
-        tool_obj
-        for name, tool_obj in all_tools.items()
-        if name in skill_set
-    ]
-    print(
-        f"[Registry] 集合「{skill_set.name}」加载 {len(selected)}/{len(skill_set.tool_names)} 个工具"
-    )
+    """根据 SkillSet 返回对应的工具列表。"""
+    all_tools = build_tools(db=db, tech_kb=tech_kb, ds_course_kb=ds_course_kb)
+    selected  = [obj for name, obj in all_tools.items() if name in skill_set]
+    print(f"[Registry] 集合「{skill_set.name}」加载 {len(selected)}/{len(skill_set)} 个工具")
     return selected
 
 
 # ── 便捷函数 ──────────────────────────────────────────────────────────────────
 
-def get_interview_tools(db) -> list:
-    """面试引擎专用工具（轻量，无历史、无联网）。"""
-    return get_tools_for(db, knowledge_store=None, skill_set=INTERVIEW_SKILLS)
+def get_interview_tools(db, ds_course_kb: Optional[KnowledgeCore] = None) -> list:
+    """面试引擎专用（COMMON_GROUP + DS_COURSE_GROUP）。ds_course_kb=None 时自动读 env。"""
+    return get_tools_for(db=db, ds_course_kb=ds_course_kb, skill_set=INTERVIEW_SKILLS)
 
 
-def get_assistant_tools(db, knowledge_store) -> list:
-    """AI 助手全量工具。"""
-    return get_tools_for(db, knowledge_store=knowledge_store, skill_set=ASSISTANT_SKILLS)
+def get_assistant_tools(db, tech_kb: Optional[KnowledgeCore] = None) -> list:
+    """AI 助手全量工具（含 search_knowledge_base）。tech_kb=None 时自动读 env。"""
+    return get_tools_for(db=db, tech_kb=tech_kb, skill_set=ASSISTANT_SKILLS)
 
 
-def get_readonly_tools(db, knowledge_store) -> list:
-    """只读工具集：题库 + 知识库，无历史、无联网。"""
-    return get_tools_for(db, knowledge_store=knowledge_store, skill_set=READONLY_SKILLS)
+def get_readonly_tools(db, tech_kb: Optional[KnowledgeCore] = None) -> list:
+    """只读工具集。"""
+    return get_tools_for(db=db, tech_kb=tech_kb, skill_set=READONLY_SKILLS)
 
 
-def get_tools(db, knowledge_store) -> list:
+def get_tools(db, tech_kb=None) -> list:
     """兼容旧接口，等同于 get_assistant_tools。"""
-    return get_assistant_tools(db, knowledge_store)
+    return get_assistant_tools(db, tech_kb=tech_kb)

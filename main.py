@@ -1,6 +1,6 @@
 # main.py
 import sys
-from pathlib import Path
+import os
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,10 +12,8 @@ from PySide6.QtWidgets import (
 
 from service.db import DatabaseManager
 from service.schema import SchemaInitializer
-from service.knowledge_store import KnowledgeStore
 from service.interview_engine import InterviewEngine
-from service.agent_core import Agent
-from service.tools import get_tools
+from service.helper_engine import HelperEngine
 
 from UI.interview_panel import InterviewPanel
 from UI.agent_panel import AgentPanel
@@ -32,28 +30,14 @@ def main():
     db = DatabaseManager("interview.db")
     SchemaInitializer(db).initialize()
 
-    # 百炼云端知识库，仅做检索，无需本地导入文件
-    ks = KnowledgeStore(db)
-
-    engine = InterviewEngine(db, ks)
-
-    # ── Agent ─────────────────────────────────────────────────────────────────
-    agent = Agent(
-        db=db,
-        system_prompt="""你是一位专业的求职面试辅导助手。
-你可以帮助用户：
-1. 从题库随机抽题或搜索题目（使用 draw_questions_from_bank / search_question_bank）
-2. 查看题库统计（使用 get_question_bank_stats）
-3. 查询岗位技术要求（使用 get_job_position_info）
-4. 从知识库检索技术概念（使用 search_knowledge_base）
-5. 联网搜索最新技术资料（使用 web_search）
-6. 查看学生历史面试表现（使用 get_student_interview_history）
-
-请用简洁、专业的中文回答。优先查询知识库！知识库没有时再联网搜索。
-输出格式清晰，善用 Markdown 标题和列表。""",
-    )
-    tools = get_tools(db, ks)
-    agent.register_tools(tools)
+    # ── 引擎层 ────────────────────────────────────────────────────────────────
+    # KnowledgeCore 实例由各引擎内部通过 registry 自动从 env 构造，
+    # 无需在 main.py 手动创建。
+    # 相关环境变量（.env）：
+    #   TECH_KB_ID      — 技术知识库，HelperEngine(AI 助手) 使用
+    #   DS_COURSE_KB_ID — 数据结构课程库，InterviewEngine(面试引擎) 使用
+    interview_engine = InterviewEngine(db=db)
+    helper_engine    = HelperEngine(db=db)
 
     # ── 主窗口 ────────────────────────────────────────────────────────────────
     window = QMainWindow()
@@ -83,10 +67,10 @@ def main():
         QTabBar::tab:hover:!selected {{ color: {T.TEXT}; background: {T.SURFACE2}; }}
     """)
 
-    interview_panel = InterviewPanel(db, engine)
+    interview_panel = InterviewPanel(db, interview_engine)
     history_panel   = HistoryPanel(db)
     quiz_panel      = QuizPanel(db)
-    agent_panel     = AgentPanel(agent)
+    agent_panel     = AgentPanel(helper_engine)
 
     tabs.addTab(interview_panel, "🎯  模拟面试")
     tabs.addTab(quiz_panel,      "📚  题库练习")
