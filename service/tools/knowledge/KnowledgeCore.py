@@ -15,9 +15,16 @@ KnowledgeCore — 阿里云百炼 RAG SDK 封装
 from __future__ import annotations
 
 import os
+from enum import Enum
 from typing import List, Optional
 
 import requests
+
+
+class KnowledgeType(Enum):
+    """知识库类型枚举"""
+    TECH = "tech"       # 技术知识库（面试要点）
+    COURSE = "course"   # 课程知识库（教学资料）
 
 try:
     from alibabacloud_bailian20231229 import models as bailian_models
@@ -188,6 +195,9 @@ class KnowledgeCore:
                 "score": float(score),
                 "title": str(title),
             })
+        print(f"[KnowledgeCore:{self.label}] 检索结果：{len(result)} 条")
+        import json
+        print(f"[KnowledgeCore:{self.label}] 检索结果 JSON:\n{json.dumps(result, ensure_ascii=False, indent=2)}")
         return result
 
     # ═══════════════════════════════════════════════════════════════
@@ -198,13 +208,13 @@ class KnowledgeCore:
         """
         使用 DashScope HTTP API 检索。
         """
+        url = f"https://bailian.aliyuncs.com/api/v1/indices/{self.knowledge_base_id}/retrieve"
         payload = {
-            "index_id": self.knowledge_base_id,   # 新版字段名
             "query":    query,
             "top_k":    top_k,
         }
         resp = requests.post(
-            "https://dashscope.aliyuncs.com/api/v1/indices/query",
+            url,
             headers={
                 "Authorization": f"Bearer {self._api_key}",
                 "Content-Type":  "application/json",
@@ -219,6 +229,7 @@ class KnowledgeCore:
         if resp.status_code != 200:
             raise RuntimeError(
                 f"HTTP {resp.status_code}：{resp.text[:300]}\n"
+                f"请求 URL：{url}\n"
                 f"请求 payload：{payload}"
             )
 
@@ -263,7 +274,9 @@ class KnowledgeCore:
                 "score": float(score),
                 "title": title,
             })
-
+        print(f"[KnowledgeCore:{self.label}] 检索结果：{len(result)} 条")
+        import json
+        print(f"[KnowledgeCore:{self.label}] 检索结果 JSON:\n{json.dumps(result, ensure_ascii=False, indent=2)}")
         return result
 
     # ═══════════════════════════════════════════════════════════════
@@ -282,3 +295,44 @@ class KnowledgeCore:
             f"KnowledgeCore(label={self.label!r}, "
             f"id={self.knowledge_base_id!r}, mode={self._mode})"
         )
+
+
+def retrieve_combined(tech_kb, course_kb, query: str, top_k: int = 3) -> str:
+    """
+    同时检索技术知识库和课程知识库，合并结果。
+    用于课程答辩模式，结合面试要点和课程资料。
+    
+    参数：
+        tech_kb - 技术知识库实例（可为None）
+        course_kb - 课程知识库实例（可为None）
+        query - 检索关键词
+        top_k - 每个库返回的条数
+    
+    返回：
+        合并后的字符串，空时返回空字符串
+    """
+    lines = []
+    
+    if tech_kb is not None:
+        try:
+            tech_results = tech_kb.retrieve(query, top_k=top_k)
+            if tech_results and not tech_results[0].startswith(("📭", "⚠️")):
+                lines.append("【面试要点参考】")
+                for i, r in enumerate(tech_results, 1):
+                    lines.append(f"{i}. {r}")
+        except Exception as e:
+            print(f"[KnowledgeCore] 技术知识库检索失败: {e}")
+    
+    if course_kb is not None:
+        try:
+            course_results = course_kb.retrieve(query, top_k=top_k)
+            if course_results and not course_results[0].startswith(("📭", "⚠️")):
+                if lines:
+                    lines.append("")
+                lines.append("【课程资料参考】")
+                for i, r in enumerate(course_results, 1):
+                    lines.append(f"{i}. {r}")
+        except Exception as e:
+            print(f"[KnowledgeCore] 课程知识库检索失败: {e}")
+    
+    return "\n".join(lines) if lines else ""

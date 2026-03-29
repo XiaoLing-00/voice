@@ -32,7 +32,7 @@ from .db_tools import (
 from .knowledge import (
     KnowledgeCore,
     create_knowledge_search_tool,
-    create_ds_course_tool,
+    create_ds_course_tool, get_ds_coursing_kb, get_ds_teaching_kb,
 )
 from .search_tools import create_web_search_tool, create_wiki_tool
 from .permissions import (
@@ -41,9 +41,8 @@ from .permissions import (
     READONLY_SKILLS,
     ASSISTANT_SKILLS,
     ADMIN_SKILLS,
+    COURSE_DEFENSE_SKILLS,
 )
-from .difficulty_tools import create_difficulty_tool
-
 
 
 def build_tools(
@@ -70,7 +69,6 @@ def build_tools(
         ("search_question_bank",          create_quiz_search_tool),
         ("get_student_interview_history", create_history_tool),
         ("get_student_id_by_name",        create_student_lookup_tool),
-        ("adjust_question_difficulty",    create_difficulty_tool), #根据评分调整题目难度工具
     ]
     for tool_name, factory in _db_factories:
         if db is None:
@@ -100,6 +98,24 @@ def build_tools(
         except Exception as e:
             print(f"[Registry] FAIL: {tool_name} 加载失败：{e}")
 
+    # ── 教学知识库工具 ──────────────────────────────────────────────────────
+    # try:
+    #     result["search_teaching_knowledge"] = create_teaching_kb_tool(None)
+    #     print(f"[Registry] OK: search_teaching_knowledge")
+    # except ValueError as e:
+    #     print(f"[Registry] WARN: search_teaching_knowledge 跳过：{e}")
+    # except Exception as e:
+    #     print(f"[Registry] FAIL: search_teaching_knowledge 加载失败：{e}")
+
+    # ── 双知识库混合检索工具 ────────────────────────────────────────────────
+    # try:
+    #     result["search_combined_knowledge"] = create_combined_kb_tool(tech_kb, None)
+    #     print(f"[Registry] OK: search_combined_knowledge")
+    # except ValueError as e:
+    #     print(f"[Registry] WARN: search_combined_knowledge 跳过：{e}")
+    # except Exception as e:
+    #     print(f"[Registry] FAIL: search_combined_knowledge 加载失败：{e}")
+
     # ── 联网搜索类工具 ────────────────────────────────────────────────────────
     _search_factories = [
         ("web_search",       create_web_search_tool),
@@ -111,7 +127,6 @@ def build_tools(
             print(f"[Registry] OK: {tool_name}")
         except Exception as e:
             print(f"[Registry] FAIL: {tool_name} 加载失败：{e}")
-
     return result
 
 
@@ -148,3 +163,13 @@ def get_readonly_tools(db, tech_kb: Optional[KnowledgeCore] = None) -> list:
 def get_tools(db, tech_kb=None) -> list:
     """兼容旧接口，等同于 get_assistant_tools。"""
     return get_assistant_tools(db, tech_kb=tech_kb)
+
+def get_ds_course_kb(kb: KnowledgeCore = None) -> KnowledgeCore:
+    """获取课程知识库实例，供 InterviewEngine 复用。"""
+    kb = get_ds_coursing_kb(kb)
+    return kb
+
+def get_ds_teach_kb(kb: KnowledgeCore = None) -> KnowledgeCore:
+    """获取技术知识库实例，供 InterviewEngine 复用。"""
+    kb = get_ds_teaching_kb(kb)
+    return kb
