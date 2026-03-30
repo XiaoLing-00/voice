@@ -104,10 +104,15 @@ TOOL_STUDENT_LOOKUP = "get_student_id_by_name"
 # 知识库类
 TOOL_RAG_TECH       = "search_knowledge_base"   # 技术知识库，HelperEngine 用
 TOOL_RAG_DS_COURSE  = "search_ds_course"         # 数据结构课程库，InterviewEngine 用
+TOOL_RAG_TEACHING   = "search_teaching_knowledge"  # 教学知识库
+TOOL_RAG_COMBINED   = "search_combined_knowledge"  # 双知识库混合检索
 
 # 联网搜索类
 TOOL_WEB_SEARCH     = "web_search"
 TOOL_WIKIPEDIA      = "search_wikipedia"
+
+TOOL_DIFFICULTY_ADJUST = "adjust_question_difficulty" # 根据评分进行题目难度调整
+
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -116,7 +121,7 @@ TOOL_WIKIPEDIA      = "search_wikipedia"
 
 COMMON_GROUP = ToolGroup(
     name="common",
-    tools=frozenset({TOOL_JOB_INFO, TOOL_QUIZ_DRAW, TOOL_QUIZ_STATS}),
+    tools=frozenset({TOOL_JOB_INFO, TOOL_QUIZ_DRAW, TOOL_QUIZ_STATS,TOOL_DIFFICULTY_ADJUST}),
 )
 
 QUIZ_GROUP = ToolGroup(
@@ -144,6 +149,16 @@ SEARCH_GROUP = ToolGroup(
 HISTORY_GROUP = ToolGroup(
     name="history",
     tools=frozenset({TOOL_HISTORY, TOOL_STUDENT_LOOKUP}),
+)
+
+TEACHING_KB_GROUP = ToolGroup(
+    name="teaching_kb",
+    tools=frozenset({TOOL_RAG_TEACHING}),
+)
+
+COMBINED_KB_GROUP = ToolGroup(
+    name="combined_kb",
+    tools=frozenset({TOOL_RAG_COMBINED}),
 )
 
 
@@ -175,9 +190,16 @@ ADMIN_SKILLS = SkillSet.from_groups(
     COMMON_GROUP, QUIZ_GROUP, RAG_GROUP, SEARCH_GROUP, HISTORY_GROUP,
 )
 
+COURSE_DEFENSE_SKILLS = SkillSet.from_groups(
+    "course_defense",
+    "课程答辩模式：教学资料库 + 面试要点库 + 题库（双库混合）",
+    COMMON_GROUP, QUIZ_GROUP, TEACHING_KB_GROUP, COMBINED_KB_GROUP,
+)
+
 ALL_SKILL_SETS: dict[str, SkillSet] = {
     INTERVIEW_SKILLS.name: INTERVIEW_SKILLS,
     READONLY_SKILLS.name:  READONLY_SKILLS,
     ASSISTANT_SKILLS.name: ASSISTANT_SKILLS,
     ADMIN_SKILLS.name:     ADMIN_SKILLS,
+    COURSE_DEFENSE_SKILLS.name: COURSE_DEFENSE_SKILLS,
 }

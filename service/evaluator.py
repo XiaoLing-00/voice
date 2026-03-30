@@ -146,3 +146,22 @@ class AnswerEvaluator:
             suggestion=data.get("suggestion", ""),
             raw_json=raw,
         )
+
+
+def evaluate_voice_answer(voice_result):
+    """基于语音情绪和转写结果做简单评分与追问决策。"""
+    emotion = getattr(voice_result, "emotion", "")
+    score = 80 if emotion in ["自信", "流畅"] else 60
+    if score >= 90:
+        followup_decision = "harder"
+    elif score >= 60:
+        followup_decision = "easier"
+    elif score >= 30:
+        followup_decision = "no_followup"
+    else:
+        followup_decision = "end"
+
+    return {
+        "score": score,
+        "followup_decision": followup_decision,
+    }

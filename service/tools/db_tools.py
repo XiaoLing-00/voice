@@ -15,6 +15,8 @@ from typing import Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
+from service.voice import transcribe, VoiceResult
+
 
 # ═══════════════════════════════════════════════════════════════════
 # ① 学生历史记录（分页）
@@ -268,6 +270,37 @@ def create_quiz_stats_tool(db):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# ⑥ 语音转文字+情绪分析
+# ═══════════════════════════════════════════════════════════════════
+
+class VoiceTranscribeInput(BaseModel):
+    mp3_path: str = Field(..., description="MP3音频文件的绝对路径，用于语音转写和情绪分析")
+
+
+def create_voice_transcribe_tool(db):
+    @tool(args_schema=VoiceTranscribeInput)
+    def voice_transcribe(mp3_path: str) -> str:
+        """
+        语音转文字+情绪分析工具，适配AI模拟面试平台的语音作答场景。
+        接收MP3音频文件路径，调用阿里云百炼ASR API完成语音转文字，
+        同时分析语音中的情绪（仅返回：自信/紧张/迟疑/流畅/混乱），
+        最终返回包含转录文本、主情绪、情绪详情的JSON字符串；
+        若音频文件不存在/API调用失败，返回包含error字段的JSON字符串。
+        """
+        try:
+            result: VoiceResult = transcribe(mp3_path)
+            return json.dumps(
+                {
+                    "transcript": result.transcript,
+                    "emotion": result.emotion,
+                    "emotion_detail": result.emotion_detail,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+
+    return voice_transcribe
 # ⑥ 通过姓名查询学生 ID
 # ═══════════════════════════════════════════════════════════════════
 

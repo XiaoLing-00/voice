@@ -32,7 +32,7 @@ from .db_tools import (
 from .knowledge import (
     KnowledgeCore,
     create_knowledge_search_tool,
-    create_ds_course_tool,
+    create_ds_course_tool, get_ds_coursing_kb, get_ds_teaching_kb,
 )
 from .search_tools import create_web_search_tool, create_wiki_tool
 from .permissions import (
@@ -41,6 +41,7 @@ from .permissions import (
     READONLY_SKILLS,
     ASSISTANT_SKILLS,
     ADMIN_SKILLS,
+    COURSE_DEFENSE_SKILLS,
 )
 
 
@@ -71,13 +72,13 @@ def build_tools(
     ]
     for tool_name, factory in _db_factories:
         if db is None:
-            print(f"[Registry] ⚠️  {tool_name} 跳过：db 未传入")
+            print(f"[Registry] WARN: {tool_name} 跳过：db 未传入")
             continue
         try:
             result[tool_name] = factory(db)
-            print(f"[Registry] ✅ {tool_name}")
+            print(f"[Registry] OK: {tool_name}")
         except Exception as e:
-            print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
+            print(f"[Registry] FAIL: {tool_name} 加载失败：{e}")
 
     # ── 知识库类工具 ──────────────────────────────────────────────────────────
     # 工厂函数签名：factory(kb: KnowledgeCore = None)
@@ -91,10 +92,29 @@ def build_tools(
             # kb_instance 为 None 时，工厂自动从 env 构造（若 env 也未配置则抛 ValueError 被捕获）
             result[tool_name] = factory(kb_instance)
             label = kb_instance.label if kb_instance else "auto-env"
-            print(f"[Registry] ✅ {tool_name} (kb={label!r})")
+            print(f"[Registry] OK: {tool_name} (kb={label!r})")
         except ValueError as e:
-            print(f"[Registry] ⚠️  {tool_name} 跳过：{e}")
+            print(f"[Registry] WARN: {tool_name} 跳过：{e}")
         except Exception as e:
+            print(f"[Registry] FAIL: {tool_name} 加载失败：{e}")
+
+    # ── 教学知识库工具 ──────────────────────────────────────────────────────
+    # try:
+    #     result["search_teaching_knowledge"] = create_teaching_kb_tool(None)
+    #     print(f"[Registry] OK: search_teaching_knowledge")
+    # except ValueError as e:
+    #     print(f"[Registry] WARN: search_teaching_knowledge 跳过：{e}")
+    # except Exception as e:
+    #     print(f"[Registry] FAIL: search_teaching_knowledge 加载失败：{e}")
+
+    # ── 双知识库混合检索工具 ────────────────────────────────────────────────
+    # try:
+    #     result["search_combined_knowledge"] = create_combined_kb_tool(tech_kb, None)
+    #     print(f"[Registry] OK: search_combined_knowledge")
+    # except ValueError as e:
+    #     print(f"[Registry] WARN: search_combined_knowledge 跳过：{e}")
+    # except Exception as e:
+    #     print(f"[Registry] FAIL: search_combined_knowledge 加载失败：{e}")
             print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
 
     # ── 联网搜索类工具 ────────────────────────────────────────────────────────
@@ -105,10 +125,9 @@ def build_tools(
     for tool_name, factory in _search_factories:
         try:
             result[tool_name] = factory()
-            print(f"[Registry] ✅ {tool_name}")
+            print(f"[Registry] OK: {tool_name}")
         except Exception as e:
-            print(f"[Registry] ⚠️  {tool_name} 加载失败：{e}")
-
+            print(f"[Registry] FAIL: {tool_name} 加载失败：{e}")
     return result
 
 
@@ -145,3 +164,13 @@ def get_readonly_tools(db, tech_kb: Optional[KnowledgeCore] = None) -> list:
 def get_tools(db, tech_kb=None) -> list:
     """兼容旧接口，等同于 get_assistant_tools。"""
     return get_assistant_tools(db, tech_kb=tech_kb)
+
+def get_ds_course_kb(kb: KnowledgeCore = None) -> KnowledgeCore:
+    """获取课程知识库实例，供 InterviewEngine 复用。"""
+    kb = get_ds_coursing_kb(kb)
+    return kb
+
+def get_ds_teach_kb(kb: KnowledgeCore = None) -> KnowledgeCore:
+    """获取技术知识库实例，供 InterviewEngine 复用。"""
+    kb = get_ds_teaching_kb(kb)
+    return kb
