@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QComboBox, QLineEdit, QTextEdit, QScrollArea, QFrame,
     QMessageBox, QSizePolicy,
 )
+from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer, QEvent
 from PySide6.QtGui import QColor, QKeyEvent
 
 from UI.components import (
@@ -73,7 +74,7 @@ class VoiceWorker(QObject):
                 non_speech=False,
             )
             self.finished.emit(bundle)
-            
+
         except Exception as e:
             # 捕获业务异常，避免子线程崩溃导致主线程出现 Destroyed 问题
             error_msg = str(e)

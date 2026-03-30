@@ -35,14 +35,7 @@ def create_ds_course_tool(kb: KnowledgeCore = None):
         tool = create_ds_course_tool()          # 自动读 env
         tool = create_ds_course_tool(course_kb) # 手动传入
     """
-    if kb is None:
-        kb_id = os.getenv("DS_COURSE_KB_ID", "")
-        if not kb_id:
-            raise ValueError(
-                "create_ds_course_tool：未传入 kb 实例，"
-                "且环境变量 DS_COURSE_KB_ID 未配置"
-            )
-        kb = KnowledgeCore(knowledge_base_id=kb_id, label="数据结构课程")
+    kb = get_ds_coursing_kb(kb)
 
     @tool(args_schema=DSCourseSearchInput)
     def search_ds_course(query: str, top_k: int = 3) -> str:
@@ -55,9 +48,21 @@ def create_ds_course_tool(kb: KnowledgeCore = None):
         if not results or results[0].startswith(("📭", "⚠️")):
             return results[0] if results else "课程知识库未返回相关素材。"
 
-        lines = [f"📖 数据结构课程素材（关键词：{query}，共 {len(results)} 条）：\n"]
+        lines = [f" 数据结构课程素材（关键词：{query}，共 {len(results)} 条）：\n"]
         for i, r in enumerate(results, 1):
             lines.append(f"[{i}] {r}\n")
         return "\n".join(lines)
 
     return search_ds_course
+
+def get_ds_coursing_kb(kb: KnowledgeCore = None) -> KnowledgeCore:
+    if kb is None:
+        kb_id = os.getenv("DS_COURSE_KB_ID", "")
+        if not kb_id:
+            raise ValueError(
+                "create_ds_course_tool：未传入 kb 实例，"
+                "且环境变量 DS_COURSE_KB_ID 未配置"
+            )
+        print(f"[Registry] OK: 创建教学知识库实例：{kb_id}")
+        kb = KnowledgeCore(knowledge_base_id=kb_id, label="数据结构课程")
+    return kb
