@@ -1,6 +1,5 @@
 # main.py
 import sys
-import os
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -12,7 +11,7 @@ from PySide6.QtWidgets import (
 
 from service.db import DatabaseManager
 from service.schema import SchemaInitializer
-from service.interview_engine import InterviewEngine
+from service.interview_engine_sdk.interview_engine import InterviewEngine
 from service.helper_engine import HelperEngine
 
 from UI.interview_panel import InterviewPanel

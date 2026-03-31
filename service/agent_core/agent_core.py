@@ -1,4 +1,4 @@
-# service/agent_core.py
+# service/agent_core/agent_core.py
 """
 Agent 核心框架（原生 OpenAI SDK 真实流式输出）
 
@@ -13,84 +13,12 @@ from __future__ import annotations
 import json
 import os
 from typing import Any, Dict, Generator, List, Optional
-
+from .history_manage import ConversationHistory
+from .tool_calling import _lc_tool_to_openai
 from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
-
-
-# ── 对话历史管理 ──────────────────────────────────────────────────────────────
-
-class ConversationHistory:
-    def __init__(self, system_prompt: str = "", max_turns: int = 30):
-        self.system_prompt = system_prompt
-        self.max_turns = max_turns
-        self.messages: List[dict] = []
-
-    def add_user(self, content: str):
-        self.messages.append({"role": "user", "content": content})
-        self._trim()
-
-    def add_assistant(self, content: str, tool_calls: list | None = None):
-        msg: dict = {"role": "assistant", "content": content or ""}
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-        self.messages.append(msg)
-        self._trim()
-
-    def add_tool_result(self, tool_call_id: str, content: str):
-        self.messages.append({
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": content,
-        })
-        self._trim()
-
-    def _trim(self):
-        user_indices = [i for i, m in enumerate(self.messages) if m["role"] == "user"]
-        if len(user_indices) <= self.max_turns:
-            return
-        cutoff = user_indices[-self.max_turns]
-        self.messages = self.messages[cutoff:]
-
-    def get(self) -> List[dict]:
-        result = []
-        if self.system_prompt:
-            result.append({"role": "system", "content": self.system_prompt})
-        result.extend(self.messages)
-        return result
-
-    def clear(self):
-        self.messages.clear()
-
-    def update_system_prompt(self, prompt: str):
-        """更新 system prompt，不影响已有对话历史。"""
-        self.system_prompt = prompt
-
-
-# ── LangChain 工具 → OpenAI tools 格式转换 ───────────────────────────────────
-
-def _lc_tool_to_openai(tool_obj) -> dict:
-    """把 LangChain @tool 对象转换为 OpenAI tools 格式。"""
-    schema = (
-        tool_obj.args_schema.schema()
-        if tool_obj.args_schema
-        else {"properties": {}, "type": "object"}
-    )
-    return {
-        "type": "function",
-        "function": {
-            "name": tool_obj.name,
-            "description": tool_obj.description or "",
-            "parameters": {
-                "type": "object",
-                "properties": schema.get("properties", {}),
-                "required": schema.get("required", []),
-            },
-        },
-    }
-
 
 # ── Agent 主类 ────────────────────────────────────────────────────────────────
 

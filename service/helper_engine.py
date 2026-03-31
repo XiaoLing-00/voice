@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Generator, List, Optional
 
-from service.agent_core import Agent
+from service.agent_core.agent_core import Agent
 from service.tools.permissions import ASSISTANT_SKILLS
 
 

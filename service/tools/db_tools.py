@@ -15,7 +15,7 @@ from typing import Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from service.voice import transcribe, VoiceResult
+from service.voice_sdk.voice import transcribe, VoiceResult
 
 
 # ═══════════════════════════════════════════════════════════════════

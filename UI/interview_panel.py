@@ -24,7 +24,7 @@ from UI.components import (
     Theme as T, ChatBubble, ScoreCardBubble, TypingIndicator, StreamSignals,
     ButtonFactory, GLOBAL_QSS, input_qss, combo_qss,
 )
-from service.voice import VoiceRecorder, STTClient, VoiceResult, RecordBundle
+from service.voice_sdk.voice import VoiceRecorder, STTClient, VoiceResult, RecordBundle
 
 
 class VoiceWorker(QObject):
