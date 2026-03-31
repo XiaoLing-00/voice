@@ -13,7 +13,7 @@
 git reset --soft HEAD~1
 
 含义：
-
+    
 撤回最近一次 commit
 
 代码还在本地
