@@ -9,6 +9,8 @@ submit_answer_stream / finish_session_stream），实现：
 """
 import json
 import os
+import queue
+import threading
 from datetime import datetime
 
 from PySide6.QtCore import Qt, Signal, QThread, QObject, QTimer, QEvent
@@ -24,7 +26,10 @@ from UI.components import (
     Theme as T, ChatBubble, ScoreCardBubble, TypingIndicator, StreamSignals,
     ButtonFactory, GLOBAL_QSS, input_qss, combo_qss,
 )
-from service.voice_sdk.voice import VoiceRecorder, STTClient, VoiceResult, RecordBundle
+from service.voice_sdk.voice import (
+    VoiceRecorder, STTClient, VoiceResult, RecordBundle,
+    StreamingAudioPlayer, stream_interview_tts_from_tokens,
+)
 
 
 class VoiceWorker(QObject):
@@ -297,6 +302,15 @@ class InterviewPanel(QWidget):
         self._voice_bubble_default_style: dict[ChatBubble, str] = {}
         self._playing_bubble: ChatBubble | None = None
 
+        # ── 面试官语音播报 ──────────────────────────────────────────────────
+        self._interviewer_tts_queue: queue.Queue[str | None] | None = None
+        self._interviewer_tts_thread: threading.Thread | None = None
+        self._interviewer_tts_player: StreamingAudioPlayer | None = None
+        self._interviewer_tts_started = False
+        self._tts_last_token: str = ""
+        self._tts_recent_sentence_cache: list[str] = []
+        self._tts_last_playback_sentence: str = ""
+
         # ── 滚动状态 ──────────────────────────────────────────────────────────
         self._user_scrolled_up = False        # 用户是否手动滚离了底部
         self._has_new_content = False         # 是否有未读新内容
@@ -507,6 +521,11 @@ class InterviewPanel(QWidget):
         if self._typing_indicator is not None:
             self._remove_typing_indicator()
 
+        # 只对面试官问题/追问做语音播报，报告阶段保持静默
+        if self._stream_phase in (InterviewWorker.PHASE_FIRST_Q, InterviewWorker.PHASE_ANSWER):
+            self._ensure_interviewer_tts_started()
+            self._feed_interviewer_tts_token(chunk)
+
         if self._current_ai_bubble is None:
             self._current_ai_bubble = ChatBubble("ai")
             self._chat_layout.insertWidget(
@@ -524,6 +543,7 @@ class InterviewPanel(QWidget):
         self._session_id = session_id
         self._stream_phase = InterviewWorker.PHASE_FIRST_Q
         self._is_streaming = True
+        self._interviewer_tts_started = False
         self._add_typing_indicator()
         self._set_loading(True, "AI 面试官正在出题...")
 
@@ -570,6 +590,9 @@ class InterviewPanel(QWidget):
         self._current_ai_bubble = None
         self._is_streaming = False
 
+        if phase in (InterviewWorker.PHASE_FIRST_Q, InterviewWorker.PHASE_ANSWER):
+            self._stop_interviewer_tts()
+
         if phase == InterviewWorker.PHASE_FIRST_Q:
             self._set_loading(False)
             self._set_input_enabled(True)
@@ -598,6 +621,7 @@ class InterviewPanel(QWidget):
         self._remove_typing_indicator()
         self._current_ai_bubble = None
         self._is_streaming = False
+        self._stop_interviewer_tts()
         self._set_loading(False)
         self._set_input_enabled(True)
         self.start_btn.setEnabled(True)
@@ -656,6 +680,7 @@ class InterviewPanel(QWidget):
         self._pending_is_finished = False
         self._stream_phase = InterviewWorker.PHASE_ANSWER
         self._is_streaming = True
+        self._interviewer_tts_started = False
         self._add_typing_indicator()
         self._set_loading(True, "AI 正在思考...")
         self._set_input_enabled(False)
@@ -691,6 +716,9 @@ class InterviewPanel(QWidget):
         self.answer_input.setEnabled(False)
         self.send_btn.setEnabled(False)
         self.status_lbl.setText("录音中... 点击“停止录音”进入预发送")
+
+        # 若旧线程仍存在，先安全收尾，避免 QThread 悬空。
+        self._shutdown_thread("_voice_thread", "_voice_worker", stop_worker=True)
 
         # 确保线程引用在实例上持有，便于生命周期管理
         self._voice_thread = QThread(self)
@@ -850,6 +878,9 @@ class InterviewPanel(QWidget):
         self.voice_cancel_send_btn.setEnabled(False)
         self.status_lbl.setText("正在转文字，请稍候...")
 
+        # 若旧 ASR 线程仍存在，先安全收尾，避免线程悬空。
+        self._shutdown_thread("_asr_thread", "_asr_worker", stop_worker=False)
+
         self._asr_thread = QThread(self)
         self._asr_worker = ASRWorker(self._pending_voice_bundle.audio_path)
         self._asr_worker.moveToThread(self._asr_thread)
@@ -966,6 +997,7 @@ class InterviewPanel(QWidget):
         self.finish_btn.setEnabled(False)
         self._stream_phase = InterviewWorker.PHASE_REPORT
         self._is_streaming = True
+        self._stop_interviewer_tts()
         self._add_system_msg("━━━━━━  面试结束，正在生成报告  ━━━━━━")
         self._add_typing_indicator()
         self._worker.request_finish.emit()
@@ -1041,6 +1073,144 @@ class InterviewPanel(QWidget):
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, bubble)
         self._notify_new_content()
 
+    def _shutdown_thread(self, thread_attr: str, worker_attr: str, stop_worker: bool = False) -> None:
+        thread = getattr(self, thread_attr, None)
+        worker = getattr(self, worker_attr, None)
+
+        if stop_worker and worker is not None:
+            for method_name in ("stop", "cancel"):
+                method = getattr(worker, method_name, None)
+                if callable(method):
+                    try:
+                        method()
+                    except Exception:
+                        pass
+
+        if thread is not None:
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    if not thread.wait(1200):
+                        thread.terminate()
+                        thread.wait(300)
+            except Exception:
+                pass
+
+        setattr(self, worker_attr, None)
+        setattr(self, thread_attr, None)
+
+    def _ensure_interviewer_tts_started(self):
+        if self._interviewer_tts_started:
+            return
+
+        api_key = os.getenv("DASHSCOPE_API_KEY", "")
+        if not api_key:
+            print("[TTS] DASHSCOPE_API_KEY 缺失，跳过面试官语音")
+            return
+
+        self._interviewer_tts_queue = queue.Queue()
+        self._interviewer_tts_player = StreamingAudioPlayer()
+        self._tts_last_token = ""
+        self._tts_recent_sentence_cache = []
+        self._tts_last_playback_sentence = ""
+
+        def _token_iter():
+            assert self._interviewer_tts_queue is not None
+            while True:
+                token = self._interviewer_tts_queue.get()
+                if token is None:
+                    break
+                yield token
+
+        def _runner():
+            try:
+                stream_interview_tts_from_tokens(
+                    token_stream=_token_iter(),
+                    on_audio_chunk=self._on_interviewer_audio_chunk,
+                    api_key=api_key,
+                    model="qwen3-tts-instruct-flash",
+                    voice="Elias",
+                    sentence_punctuations=frozenset({".", "。", "!", "！", "?", "？", ";", "；", ":", "：", "\n"}),
+                    ordered_output=False,
+                    max_workers=1,
+                    max_buffer_length=64,
+                )
+            except Exception as exc:
+                print(f"[TTS] interviewer stream error: {exc}")
+            finally:
+                if self._interviewer_tts_player is not None:
+                    self._interviewer_tts_player.close()
+
+        self._interviewer_tts_thread = threading.Thread(target=_runner, daemon=True)
+        self._interviewer_tts_thread.start()
+        self._interviewer_tts_started = True
+
+    def _feed_interviewer_tts_token(self, token: str):
+        if self._interviewer_tts_queue is None:
+            return
+        token_text = str(token or "")
+        if not token_text:
+            return
+
+        token_text = token_text.strip("\r")
+        if not token_text:
+            return
+
+        # 去重1：连续重复 token 直接忽略（常见于上游重发）。
+        if token_text == self._tts_last_token:
+            return
+
+        stripped = token_text.strip()
+        if stripped and stripped[-1] in {"。", "！", "？", ".", "!", "?", "\n"} and len(stripped) > 3:
+            # 去重2：完整句子在短窗口内重复出现，忽略重复调用。
+            if stripped in self._tts_recent_sentence_cache:
+                self._tts_last_token = token_text
+                return
+            self._tts_recent_sentence_cache.append(stripped)
+            if len(self._tts_recent_sentence_cache) > 12:
+                self._tts_recent_sentence_cache.pop(0)
+
+        self._tts_last_token = token_text
+        self._interviewer_tts_queue.put(token_text)
+
+    def _on_interviewer_audio_chunk(self, audio_chunk: bytes, sentence: str):
+        if not audio_chunk:
+            return
+
+        # 同一句子的连续 chunk 只打印一次句子日志，避免日志风暴。
+        if sentence != self._tts_last_playback_sentence:
+            print(f"[TTS] sentence: {sentence}")
+            self._tts_last_playback_sentence = sentence
+        if self._interviewer_tts_player is not None:
+            self._interviewer_tts_player.submit(audio_chunk)
+
+    def _stop_interviewer_tts(self, force: bool = False):
+        if self._interviewer_tts_queue is not None:
+            try:
+                self._interviewer_tts_queue.put(None)
+            except Exception:
+                pass
+
+        if self._interviewer_tts_thread and self._interviewer_tts_thread.is_alive():
+            timeout = 2.0 if force else 8.0
+            self._interviewer_tts_thread.join(timeout=timeout)
+
+            # 非强制停止时，若仍在合成则不立即关闭播放器，避免语音被截断。
+            if self._interviewer_tts_thread.is_alive() and not force:
+                print("[TTS] still synthesizing, skip forced shutdown to avoid truncation")
+                return
+
+        if self._interviewer_tts_player is not None:
+            self._interviewer_tts_player.close()
+            self._interviewer_tts_player.join(timeout=2.0)
+        self._interviewer_tts_queue = None
+        self._interviewer_tts_thread = None
+        self._interviewer_tts_player = None
+        self._interviewer_tts_started = False
+        self._tts_last_token = ""
+        self._tts_recent_sentence_cache = []
+        self._tts_last_playback_sentence = ""
+
     def _add_system_msg(self, text: str):
         bubble = ChatBubble("system", text)
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, bubble)
@@ -1103,12 +1273,19 @@ class InterviewPanel(QWidget):
         return super().eventFilter(obj, event)
 
     def closeEvent(self, event):
-        self._thread.quit()
-        self._thread.wait()
-        if self._voice_thread and self._voice_thread.isRunning():
-            self._voice_thread.quit()
-            self._voice_thread.wait()
-        if self._asr_thread and self._asr_thread.isRunning():
-            self._asr_thread.quit()
-            self._asr_thread.wait()
+        # 先停 TTS 播放，再关闭所有 QThread，避免 "QThread: Destroyed while thread is still running"。
+        self._stop_interviewer_tts(force=True)
+
+        self._shutdown_thread("_voice_thread", "_voice_worker", stop_worker=True)
+        self._shutdown_thread("_asr_thread", "_asr_worker", stop_worker=False)
+
+        try:
+            if self._thread and self._thread.isRunning():
+                self._thread.quit()
+                if not self._thread.wait(1500):
+                    self._thread.terminate()
+                    self._thread.wait(300)
+        except Exception:
+            pass
+
         super().closeEvent(event)
