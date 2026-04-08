@@ -11,8 +11,8 @@ from .info.Theme import Theme, T
 from .info.StreamSignals import StreamSignals
 
 from .ButtonFactory import ButtonFactory
-from .ChatBubble import ChatBubble
-from .ScoreCardBubble import ScoreCardBubble
+from UI.components.Bubble.ChatBubble import ChatBubble
+from UI.components.Bubble.ScoreCardBubble import ScoreCardBubble
 from .StatBadge import StatBadge
 from .TypingIndicator import TypingIndicator
 
