@@ -26,10 +26,10 @@ from UI.components import (
     T, ChatBubble, ScoreCardBubble, TypingIndicator,
     ButtonFactory, GLOBAL_QSS, input_qss, combo_qss,
 )
-from service.voice_sdk.voice import (
-    VoiceRecorder, STTClient, VoiceResult, RecordBundle,
-    StreamingAudioPlayer,
-)
+from service.voice_sdk.audio.recorder import VoiceRecorder
+from service.voice_sdk.stt.client import STTClient
+from service.voice_sdk.models import (VoiceResult,RecordBundle)
+from service.voice_sdk.audio.player import StreamingAudioPlayer
 
 
 # ══════════════════════════════════════════════════════════════════════════════

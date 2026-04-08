@@ -261,10 +261,8 @@ class ChatBubble(QFrame):
 
         # 延迟导入，避免在未安装语音依赖的环境中启动失败
         try:
-            from service.voice_sdk.voice import (
-                StreamingAudioPlayer,
-                stream_interview_tts_from_tokens,
-            )
+            from service.voice_sdk.audio.player import StreamingAudioPlayer
+            from service.voice_sdk.tts.pipeline import stream_interview_tts_from_tokens
         except ImportError:
             return
 

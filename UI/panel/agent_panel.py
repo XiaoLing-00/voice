@@ -236,7 +236,7 @@ class AgentPanel(QWidget):
         # AgentPanel 中助手回复不启用 TTS；
         # 如需 TTS 只需改为 enable_tts=True
         if self._current_ai_bubble is None:
-            self._current_ai_bubble = ChatBubble("assistant", enable_tts=False)
+            self._current_ai_bubble = ChatBubble("assistant", enable_tts=True)
             self._current_ai_bubble.start_tts()
             self._chat_layout.insertWidget(
                 self._chat_layout.count() - 1, self._current_ai_bubble

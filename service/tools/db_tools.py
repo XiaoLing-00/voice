@@ -15,8 +15,8 @@ from typing import Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from service.voice_sdk.voice import transcribe, VoiceResult
-
+from service.voice_sdk.models import VoiceResult
+from service.voice_sdk.stt.client import transcribe
 
 # ═══════════════════════════════════════════════════════════════════
 # ① 学生历史记录（分页）
