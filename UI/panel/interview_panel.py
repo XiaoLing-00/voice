@@ -1,10 +1,11 @@
 """
+interview_panel.py
 面试主界面（组件化重构版）。
 
 架构说明：
-  - UI 组件：AsrButton / ChatInputBar / ChatBubble / ScoreCardBubble / TypingIndicator
-  - 业务流：仅负责信号路由、状态同步、面试会话编排
-  - 零耦合：组件不感知 db/engine，面板不感知组件内部实现
+  - Footer 组件统一管理 AsrButton + ChatInputBar，面板不直接操作 asr_btn
+  - _set_input_enabled 只调用 footer.set_enabled()，彻底杜绝父链 disabled 问题
+  - 业务流：信号路由、状态同步、面试会话编排，零耦合组件内部
 """
 
 import json
@@ -23,14 +24,12 @@ from UI.components import (
     T, ChatBubble, ScoreCardBubble, TypingIndicator,
     ButtonFactory, GLOBAL_QSS, input_qss, combo_qss,
 )
-# 👇 引入独立组件（按实际路径调整）
-from UI.components.button.ASR_button import AsrButton
-from UI.components.chat_input_bar import ChatInputBar
+from UI.components.footer import Footer
 from service.voice_sdk.models import VoiceResult
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 面试 Worker（LLM 流式，保持不变）
+# 面试 Worker（不变）
 # ══════════════════════════════════════════════════════════════════════════════
 
 class InterviewWorker(QObject):
@@ -122,7 +121,7 @@ class InterviewWorker(QObject):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 「↓ 新消息」浮动 Toast（保持不变）
+# 「↓ 新消息」浮动 Toast（不变）
 # ══════════════════════════════════════════════════════════════════════════════
 
 class NewMessageToast(QPushButton):
@@ -142,50 +141,47 @@ class NewMessageToast(QPushButton):
         self.hide()
 
     def update_position(self, parent_rect) -> None:
-        self.move(parent_rect.width() - self.width() - 18,
-                  parent_rect.height() - self.height() - 14)
+        self.move(
+            parent_rect.width() - self.width() - 18,
+            parent_rect.height() - self.height() - 14,
+        )
         self.raise_()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 主面板（重构核心）
+# 主面板
 # ══════════════════════════════════════════════════════════════════════════════
 
 class InterviewPanel(QWidget):
     def __init__(self, db, engine, parent=None):
         super().__init__(parent)
-        self.db = db
+        self.db     = db
         self.engine = engine
         self._session_id: int | None = None
 
         # 流式对话状态
-        self._is_streaming         = False
+        self._is_streaming        = False
         self._current_ai_bubble: ChatBubble | None = None
         self._typing_indicator: TypingIndicator | None = None
-        self._stream_phase         = ""
-        self._pending_is_finished  = False
+        self._stream_phase        = ""
+        self._pending_is_finished = False
 
         # 滚动状态
         self._user_scrolled_up = False
         self._has_new_content  = False
 
-        # 👇 组件实例（纯 UI，零业务逻辑）
-        self.asr_btn = AsrButton(self)
-        self.input_bar = ChatInputBar(self)
-
-        # 👇 面试 Worker（业务核心）
+        # 面试 Worker
         self._worker = InterviewWorker(engine, db)
         self._thread = QThread()
         self._worker.moveToThread(self._thread)
-
         self._bind_worker_signals()
         self._thread.start()
 
         self._build_ui()
-        self._bind_component_signals()
+        self._bind_footer_signals()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 信号绑定
+    # Worker 信号绑定
     # ══════════════════════════════════════════════════════════════════════════
 
     def _bind_worker_signals(self) -> None:
@@ -203,18 +199,36 @@ class InterviewPanel(QWidget):
         w.stream_done.connect(self._on_stream_done)
         w.error_occurred.connect(self._on_error)
 
-    def _bind_component_signals(self) -> None:
-        # ASR 组件联动
-        self.asr_btn.status_changed.connect(lambda s: self.status_lbl.setText(s))
-        self.asr_btn.recording_started.connect(lambda: self._set_input_enabled(False))
-        self.asr_btn.recording_stopped.connect(lambda: self._set_input_enabled(True))
-        self.asr_btn.play_requested.connect(self._play_audio_file)
-        self.asr_btn.asr_finished.connect(self._on_asr_transcript_ready)
-        self.asr_btn.asr_error.connect(lambda e: QMessageBox.critical(self, "转写失败", e))
-        self.asr_btn.recording_error.connect(lambda e: QMessageBox.critical(self, "录音失败", e))
+    # ══════════════════════════════════════════════════════════════════════════
+    # Footer 信号绑定（录音/输入 → 业务，不直接碰 asr_btn）
+    # ══════════════════════════════════════════════════════════════════════════
 
-        # 输入框组件联动
-        self.input_bar.send_requested.connect(self._submit_answer_request)
+    def _bind_footer_signals(self) -> None:
+        # 文字发送
+        self.footer.send_requested.connect(self._on_text_send)
+
+        # ASR 转写完成 → 自动填入并提交
+        self.footer.asr_finished.connect(self._on_asr_transcript_ready)
+
+        # 状态栏同步
+        self.footer.status_changed.connect(self._update_status)
+
+        # 音频播放委托（Footer 透传 AsrButton 的 play_requested）
+        self.footer.play_requested.connect(self._play_audio_file)
+
+        # 错误提示
+        self.footer.asr_error.connect(
+            lambda e: QMessageBox.critical(self, "转写失败", e)
+        )
+
+        # recording_started / recording_stopped 已在 Footer 内部联动 input_bar
+        # 面板只需转发给状态栏即可
+        self.footer.recording_started.connect(
+            lambda: self._update_status("🎙 录音中...")
+        )
+        self.footer.recording_stopped.connect(
+            lambda: self._update_status("录音完成")
+        )
 
     # ══════════════════════════════════════════════════════════════════════════
     # UI 构建
@@ -227,18 +241,25 @@ class InterviewPanel(QWidget):
         root.setSpacing(0)
         root.addWidget(self._build_header())
         root.addWidget(self._build_chat_area(), stretch=1)
-        root.addWidget(self._build_footer())
+
+        # ✅ 用 Footer 组件替换原手工拼装的 QFrame footer
+        self.footer = Footer(min_height=190, max_height=420)
+        root.addWidget(self.footer)
 
     def _build_header(self) -> QFrame:
         header = QFrame()
         header.setFixedHeight(60)
-        header.setStyleSheet(f"QFrame {{ background: {T.SURFACE}; border-bottom: 1px solid {T.BORDER}; }}")
+        header.setStyleSheet(
+            f"QFrame {{ background: {T.SURFACE}; border-bottom: 1px solid {T.BORDER}; }}"
+        )
         lay = QHBoxLayout(header)
         lay.setContentsMargins(22, 0, 22, 0)
         lay.setSpacing(12)
 
         title = QLabel("🎯  模拟面试")
-        title.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {T.TEXT}; font-family: {T.FONT};")
+        title.setStyleSheet(
+            f"font-size: 15px; font-weight: 800; color: {T.TEXT}; font-family: {T.FONT};"
+        )
         lay.addWidget(title)
         lay.addSpacing(20)
 
@@ -261,6 +282,13 @@ class InterviewPanel(QWidget):
         lay.addWidget(self.job_combo)
         lay.addStretch()
 
+        self.status_lbl = QLabel("准备就绪")
+        self.status_lbl.setStyleSheet(
+            f"color: {T.TEXT_DIM}; font-size: 12px; font-family: {T.FONT};"
+        )
+        lay.addWidget(self.status_lbl)
+        lay.addSpacing(12)
+
         self.start_btn = ButtonFactory.solid("开始面试", T.NEON, height=34)
         self.start_btn.setFixedWidth(90)
         self.start_btn.clicked.connect(self._start_interview)
@@ -278,7 +306,9 @@ class InterviewPanel(QWidget):
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.NoFrame)
-        self._scroll.setStyleSheet(f"QScrollArea {{ background: {T.BG}; border: none; }}")
+        self._scroll.setStyleSheet(
+            f"QScrollArea {{ background: {T.BG}; border: none; }}"
+        )
 
         self._chat_container = QWidget()
         self._chat_container.setStyleSheet(f"background: {T.BG};")
@@ -299,40 +329,27 @@ class InterviewPanel(QWidget):
 
         return self._scroll
 
-    def _build_footer(self) -> QFrame:
-        footer = QFrame()
-        footer.setFixedHeight(190)  # 适配 AsrButton + ChatInputBar 高度
-        footer.setStyleSheet(f"QFrame {{ background: {T.SURFACE}; border-top: 1px solid {T.BORDER}; }}")
-        f_lay = QVBoxLayout(footer)
-        f_lay.setContentsMargins(22, 12, 22, 12)
-        f_lay.setSpacing(8)
-
-        self.status_lbl = QLabel("准备就绪")
-        self.status_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 12px; font-family: {T.FONT};")
-        f_lay.addWidget(self.status_lbl)
-
-        # 👇 嵌入两个独立组件
-        f_lay.addWidget(self.asr_btn)
-        f_lay.addWidget(self.input_bar)
-
-        return footer
-
     # ══════════════════════════════════════════════════════════════════════════
-    # 业务处理（组件信号 -> Worker）
+    # Footer 事件处理（输入/录音 → Worker）
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _on_text_send(self, text: str) -> None:
+        """文字输入框发送"""
+        self._submit_answer(text)
 
     def _on_asr_transcript_ready(self, transcript: str) -> None:
-        """ASR 转写完成后的处理"""
-        if self._is_streaming or not transcript:
+        """ASR 转写完成 → 自动填入并提交"""
+        if not transcript or self._is_streaming:
             return
-        # 填入输入框并自动提交（若需手动确认，注释下一行）
-        self.input_bar.set_text(transcript)
-        self._submit_answer_request(transcript)
+        self.footer.set_input_text(transcript)
+        self._submit_answer(transcript)
 
-    def _submit_answer_request(self, answer: str) -> None:
-        """提交回答给 LLM"""
-        if self._is_streaming:
+    def _submit_answer(self, answer: str) -> None:
+        """统一提交回答入口"""
+        answer = answer.strip()
+        if not answer or self._is_streaming:
             return
+        self.footer.clear_input()
         self._pending_is_finished = False
         self._stream_phase = InterviewWorker.PHASE_ANSWER
         self._is_streaming = True
@@ -342,8 +359,17 @@ class InterviewPanel(QWidget):
         self._worker.request_answer.emit(answer)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Worker 信号处理（Worker -> 组件/状态）
+    # Worker 信号处理
     # ══════════════════════════════════════════════════════════════════════════
+
+    def _on_session_started(self, session_id: int) -> None:
+        self._session_id = session_id
+        self._stream_phase = InterviewWorker.PHASE_FIRST_Q
+        self._is_streaming = True
+        # ✅ 只禁用 input_bar，不禁用整个 footer
+        self._set_input_enabled(False)
+        self._add_typing_indicator()
+        self._set_loading(True, "AI 面试官正在出题...")
 
     def _on_chunk(self, chunk: str) -> None:
         if self._typing_indicator is not None:
@@ -362,15 +388,6 @@ class InterviewPanel(QWidget):
 
         self._current_ai_bubble.append_chunk(chunk)
         self._notify_new_content()
-
-    def _on_session_started(self, session_id: int) -> None:
-        self._session_id = session_id
-        self._stream_phase = InterviewWorker.PHASE_FIRST_Q
-        self._is_streaming = True
-        self.asr_btn.setEnabled(False)
-        self.input_bar.set_enabled(False)
-        self._add_typing_indicator()
-        self._set_loading(True, "AI 面试官正在出题...")
 
     def _on_eval_received(self, data: dict) -> None:
         class _FakeEval:
@@ -396,7 +413,7 @@ class InterviewPanel(QWidget):
 
     def _on_all_finished(self) -> None:
         self._add_system_msg("面试已结束，请点击「结束面试」查看报告。")
-        self.status_lbl.setText("题目已完成，请点击「结束面试」生成报告")
+        self._update_status("题目已完成，请点击「结束面试」生成报告")
         self._set_input_enabled(False)
 
     def _on_score_received(self, score: float) -> None:
@@ -407,30 +424,32 @@ class InterviewPanel(QWidget):
             self._current_ai_bubble.stop_tts()
         self._current_ai_bubble = None
         self._is_streaming = False
-        self.asr_btn.setEnabled(True)
-        self.input_bar.set_enabled(True)
 
         if phase == InterviewWorker.PHASE_FIRST_Q:
             self._set_loading(False)
             self._set_input_enabled(True)
             self.finish_btn.setEnabled(True)
             self._add_system_msg("面试已开始，加油！🚀")
+
         elif phase == InterviewWorker.PHASE_ANSWER:
             self._set_loading(False)
             if self._pending_is_finished:
                 self._pending_is_finished = False
                 self._set_input_enabled(False)
-                self.status_lbl.setText("题目已完成，请点击「结束面试」生成报告")
+                self._update_status("题目已完成，请点击「结束面试」生成报告")
             else:
                 self._set_input_enabled(True)
+
         elif phase == InterviewWorker.PHASE_REPORT:
             self._set_loading(False)
             self._add_system_msg("面试完成 ✓")
-            self.status_lbl.setText("面试完成 ✓")
+            self._update_status("面试完成 ✓")
             self.start_btn.setEnabled(True)
             self.name_input.setEnabled(True)
             self.job_combo.setEnabled(True)
             self._session_id = None
+            # 报告阶段结束后恢复输入区，方便用户继续交互
+            self._set_input_enabled(True)
 
     def _on_error(self, msg: str) -> None:
         self._remove_typing_indicator()
@@ -438,8 +457,6 @@ class InterviewPanel(QWidget):
             self._current_ai_bubble.stop_tts(force=True)
         self._current_ai_bubble = None
         self._is_streaming = False
-        self.asr_btn.setEnabled(True)
-        self.input_bar.set_enabled(True)
         self._set_loading(False)
         self._set_input_enabled(True)
         self.start_btn.setEnabled(True)
@@ -448,7 +465,7 @@ class InterviewPanel(QWidget):
         QMessageBox.critical(self, "错误", f"发生错误：{msg}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 业务控制（Header 按钮 -> Worker）
+    # 业务控制（Header 按钮）
     # ══════════════════════════════════════════════════════════════════════════
 
     def _load_jobs(self) -> None:
@@ -490,7 +507,7 @@ class InterviewPanel(QWidget):
         self._worker.request_finish.emit()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 音频播放委托
+    # 音频播放
     # ══════════════════════════════════════════════════════════════════════════
 
     def _play_audio_file(self, audio_path: str) -> None:
@@ -506,7 +523,7 @@ class InterviewPanel(QWidget):
             QMessageBox.warning(self, "播放失败", f"无法播放音频文件：{e}")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # 滚动 & Toast（保持不变）
+    # 滚动 & Toast
     # ══════════════════════════════════════════════════════════════════════════
 
     def _on_scroll_changed(self, value: int) -> None:
@@ -545,7 +562,7 @@ class InterviewPanel(QWidget):
             self._toast.update_position(self._scroll.rect())
 
     # ══════════════════════════════════════════════════════════════════════════
-    # UI 辅助（聊天气泡管理）
+    # UI 辅助
     # ══════════════════════════════════════════════════════════════════════════
 
     def _add_typing_indicator(self) -> None:
@@ -565,11 +582,6 @@ class InterviewPanel(QWidget):
         self._typing_indicator.deleteLater()
         self._typing_indicator = None
 
-    def _add_bubble(self, role: str, text: str) -> None:
-        bubble = ChatBubble(role, text)
-        self._chat_layout.insertWidget(self._chat_layout.count() - 1, bubble)
-        self._notify_new_content()
-
     def _add_score_bubble(self, eval_result) -> None:
         bubble = ScoreCardBubble(eval_result)
         self._chat_layout.insertWidget(self._chat_layout.count() - 1, bubble)
@@ -586,29 +598,40 @@ class InterviewPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+    def _update_status(self, msg: str) -> None:
+        self.status_lbl.setText(msg)
+
     def _set_loading(self, loading: bool, msg: str = "") -> None:
         if loading:
             self.status_lbl.setText(f"⏳  {msg}")
             self.status_lbl.setStyleSheet(
                 f"color: {T.NEON}; font-size: 12px; font-weight: 600;"
+                f"font-family: {T.FONT};"
             )
         else:
-            self.status_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 12px;")
+            self.status_lbl.setStyleSheet(
+                f"color: {T.TEXT_DIM}; font-size: 12px; font-family: {T.FONT};"
+            )
 
     def _set_input_enabled(self, enabled: bool) -> None:
-        """统一控制输入区域启用状态"""
-        self.asr_btn.setEnabled(enabled)
-        self.input_bar.set_enabled(enabled)
+        """
+        ✅ 只调用 footer.set_enabled()，由 Footer 内部决定如何控制子组件。
+        Footer.set_enabled() 只操作 input_bar，不碰 asr_btn，
+        彻底杜绝父链 disabled 导致按钮无法交互的问题。
+        """
+        self.footer.set_enabled(enabled)
 
     def _show_toast(self, msg: str) -> None:
-        orig = self.status_lbl.text()
+        orig_text  = self.status_lbl.text()
+        orig_style = self.status_lbl.styleSheet()
         self.status_lbl.setText(f"⚠️  {msg}")
         self.status_lbl.setStyleSheet(
             f"color: {T.ACCENT}; font-weight: bold; font-size: 12px;"
+            f"font-family: {T.FONT};"
         )
         QTimer.singleShot(2000, lambda: (
-            self.status_lbl.setText(orig),
-            self.status_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 12px;"),
+            self.status_lbl.setText(orig_text),
+            self.status_lbl.setStyleSheet(orig_style),
         ))
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -616,15 +639,12 @@ class InterviewPanel(QWidget):
     # ══════════════════════════════════════════════════════════════════════════
 
     def closeEvent(self, event) -> None:
-        # 停止当前 AI 气泡 TTS
         if self._current_ai_bubble is not None:
             self._current_ai_bubble.stop_tts(force=True)
 
-        # 👇 组件自行清理内部线程
-        self.asr_btn.close()
-        self.input_bar.close()
+        # Footer 内部的 AsrButton 会在自己的 closeEvent 里清理线程
+        self.footer.close()
 
-        # 清理 InterviewWorker 线程
         try:
             if self._thread and self._thread.isRunning():
                 self._thread.quit()
