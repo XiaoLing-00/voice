@@ -15,7 +15,7 @@ from service.interview_engine_sdk.interview_engine import InterviewEngine
 from service.helper_engine import HelperEngine
 
 from UI.panel.interview_panel import InterviewPanel
-from UI.panel.agent_panel import AgentPanel
+from UI.panel.helper_panel import HelperPanel
 from UI.panel.history_panel import HistoryPanel
 from UI.panel.quiz_panel import QuizPanel
 from UI.components.info import Theme as T
@@ -69,7 +69,7 @@ def main():
     interview_panel = InterviewPanel(db, interview_engine)
     history_panel   = HistoryPanel(db)
     quiz_panel      = QuizPanel(db)
-    agent_panel     = AgentPanel(helper_engine)
+    agent_panel     = HelperPanel(helper_engine)
 
     tabs.addTab(interview_panel, "🎯  模拟面试")
     tabs.addTab(quiz_panel,      "📚  题库练习")

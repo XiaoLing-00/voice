@@ -25,7 +25,7 @@ from UI.components import (
 )
 
 from UI.panel import (
-    AgentPanel,
+    helper_panel,
     HistoryPanel,
     InterviewPanel,
     QuizPanel,
@@ -45,6 +45,6 @@ __all__ = [
     # QSS helpers
     "GLOBAL_QSS", "header_qss", "input_qss", "combo_qss",
     # Panels
-    "AgentPanel", "HistoryPanel", "InterviewPanel", "QuizPanel",
+    "helper_panel", "HistoryPanel", "InterviewPanel", "QuizPanel",
     "PanelFrame",
 ]

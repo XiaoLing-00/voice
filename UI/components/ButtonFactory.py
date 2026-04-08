@@ -35,24 +35,27 @@ class ButtonFactory:
         return btn
 
     @staticmethod
-    def solid(text: str, color: str = T.NEON, height: int = 38) -> QPushButton:
+    @staticmethod
+    def solid(text: str, color: str = T.NEON, height: int = 38, width: int | None = None) -> QPushButton:
         """实心填充按钮（主操作）。"""
         btn = QPushButton(text)
         btn.setFixedHeight(height)
+        if width:
+            btn.setFixedWidth(width)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {color}; color: #0A0A14;
-                border: none; border-radius: {height // 2}px;
-                font-size: 13px; font-weight: 800;
-                padding: 0 18px; font-family: {T.FONT};
-            }}
-            QPushButton:hover   {{ background: {color}CC; }}
-            QPushButton:pressed {{ background: {color}AA; }}
-            QPushButton:disabled {{
-                background: {T.BORDER}; color: {T.TEXT_MUTE};
-            }}
-        """)
+                QPushButton {{
+                    background: {color}; color: #0A0A14;
+                    border: none; border-radius: {height // 2}px;
+                    font-size: 13px; font-weight: 800;
+                    padding: 0 18px; font-family: {T.FONT};
+                }}
+                QPushButton:hover   {{ background: {color}CC; }}
+                QPushButton:pressed {{ background: {color}AA; }}
+                QPushButton:disabled {{
+                    background: {T.BORDER}; color: {T.TEXT_MUTE};
+                }}
+            """)
         return btn
 
     @staticmethod
